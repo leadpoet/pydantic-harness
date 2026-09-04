@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import unittest
+from unittest import mock
 
 from pydantic import ValidationError
 
@@ -21,11 +22,12 @@ class HarnessContractTests(unittest.TestCase):
                 )
 
     def test_top_level_entrypoint_exports_selected_harness(self) -> None:
-        selected = importlib.import_module(MODULES["pydantic_ai"])
-
-        self.assertIs(harness.run_icp, selected.run_icp)
         self.assertEqual(list(inspect.signature(harness.run_icp).parameters), ["icp"])
         self.assertEqual(harness.get_last_usage(), {})
+        icp = {"icp_id": "contract-test"}
+        with mock.patch.object(harness, "_run_icp", return_value=[]) as selected:
+            self.assertEqual(harness.run_icp(icp), [])
+        selected.assert_called_once_with(icp)
 
     def test_company_output_round_trip(self) -> None:
         company = CompanyResult.model_validate(
