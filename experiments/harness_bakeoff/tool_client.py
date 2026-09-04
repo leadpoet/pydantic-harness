@@ -7,6 +7,8 @@ from typing import Any
 
 import httpx
 
+from arena_client import ArenaToolClient, WORKER_SOCKET_ENV
+
 
 class ToolClient:
     def __init__(
@@ -15,13 +17,21 @@ class ToolClient:
         token: str | None = None,
         timeout: float = 90.0,
     ):
+        socket_path = os.environ.get(WORKER_SOCKET_ENV, "").strip()
+        self.arena = (
+            ArenaToolClient(socket_path=socket_path, timeout=timeout)
+            if socket_path
+            else None
+        )
         self.base_url = (base_url or os.environ.get("BAKEOFF_TOOL_URL", "")).rstrip("/")
         self.token = token or os.environ.get("BAKEOFF_TOOL_TOKEN", "")
-        if not self.base_url or not self.token:
+        if self.arena is None and (not self.base_url or not self.token):
             raise RuntimeError("BAKEOFF_TOOL_URL and BAKEOFF_TOOL_TOKEN are required")
         self.timeout = timeout
 
     def call(self, name: str, arguments: dict[str, Any]) -> Any:
+        if self.arena is not None:
+            return self.arena.call(name, arguments)
         response = httpx.post(
             f"{self.base_url}/tool",
             headers={"Authorization": f"Bearer {self.token}"},

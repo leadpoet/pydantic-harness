@@ -7,7 +7,7 @@ have a verified, recent intent signal. Each result includes a clear sales-facing
 reason and public evidence URLs.
 
 This repository contains no Research Lab deployment or persistence code. A
-host can call its stable entrypoint or the stateless one-shot adapter below.
+host can call its stable function or run it through the Arena file adapter.
 
 ## Stable contract
 
@@ -58,9 +58,59 @@ The normal output shape is:
 }
 ```
 
-The host supplies these tools as plain JSON: `search_companies`,
-`get_company_profile`, `get_company_events`, `search_web`, `fetch_page`, and
-`submit_companies`.
+The harness can use these tools: `search_companies`, `get_company_profile`,
+`get_company_events`, `search_web`, `fetch_page`, and `submit_companies`.
+
+## Miner competition contract
+
+Miners can fork this repository and change the model, harness, prompts,
+routing, tools, and dependencies. The subnet requires only this final callable:
+
+```python
+def run_icp(icp: dict) -> list[dict]:
+    """Return up to five companies, ranked best first."""
+```
+
+Each returned company must use the output fields shown in the stable contract
+above. A submission must also contain an executable `/agent/run`. The included
+[`agent/run`](agent/run) is the reference adapter. It reads
+`/input/icp.json`, calls `run_icp`, and writes `/output/companies.json`.
+
+The Arena input file has this shape:
+
+```json
+{
+  "schema_version": "leadpoet.lab_arena.icp_input.v1",
+  "icp": {"icp_id": "daily-icp-id"},
+  "evaluation_date": "2026-09-04",
+  "company_limit": 5,
+  "provider_operations": ["openrouter.chat", "exa.search"]
+}
+```
+
+The adapter writes this shape:
+
+```json
+{
+  "schema_version": "leadpoet.lab_arena.output.v1",
+  "companies": []
+}
+```
+
+The host sets `LAB_ARENA_WORKER_SOCKET`. Provider calls contain only an
+operation name and ordinary JSON parameters. The host adds its approved
+provider credentials and enforces the same time, call, and cost limits for the
+baseline and miner submissions. A submission does not receive provider keys.
+
+Build the reference Linux AMD64 image with:
+
+```bash
+docker build --platform linux/amd64 -t your-registry/pydantic-harness:latest .
+```
+
+The competition does not require a Git commit, source digest, receipt,
+manifest, replay proof, or GitHub attestation. The Arena can pin ordinary OCI
+image bytes for the duration of one round so a run does not change midway.
 
 ## Install
 
@@ -75,9 +125,10 @@ npm ci --prefix experiments/harness_bakeoff/deepline
 export BAKEOFF_DEEPLINE_BIN="$PWD/experiments/harness_bakeoff/deepline/node_modules/.bin/deepline"
 ```
 
-Set `OPENROUTER_API_KEY`, `DEEPLINE_API_KEY`, and `SCRAPINGDOG_API_KEY` in the
-process environment. `EXA_API_KEY` is optional. Do not commit keys or private
-ICP data.
+For standalone testing only, set `OPENROUTER_API_KEY`, `DEEPLINE_API_KEY`, and
+`SCRAPINGDOG_API_KEY` in the process environment. `EXA_API_KEY` is optional.
+The Arena adapter does not read these keys. Do not commit keys or private ICP
+data.
 
 ## Run live sourcing
 

@@ -14,6 +14,11 @@ from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettin
 from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic_ai.usage import RunUsage, UsageLimits
 
+from arena_client import (
+    ARENA_OPENROUTER_KEY,
+    WORKER_SOCKET_ENV,
+    openrouter_http_client,
+)
 from experiments.harness_bakeoff.models import CompaniesResult, validate_companies
 from experiments.harness_bakeoff.prompt import SYSTEM_PROMPT, build_prompt
 from experiments.harness_bakeoff.tool_client import ToolClient
@@ -76,15 +81,23 @@ class _ToolBudget:
 
 
 async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
-    api_key = _required_environment("OPENROUTER_API_KEY")
+    arena_mode = bool(os.environ.get(WORKER_SOCKET_ENV, "").strip())
+    api_key = (
+        ARENA_OPENROUTER_KEY
+        if arena_mode
+        else _required_environment("OPENROUTER_API_KEY")
+    )
     model_name = os.environ.get("BAKEOFF_OPENROUTER_MODEL", DEFAULT_MODEL).strip()
     if not model_name:
         raise RuntimeError("BAKEOFF_OPENROUTER_MODEL cannot be empty")
 
     max_companies = _positive_integer("BAKEOFF_MAX_COMPANIES", 5, 5)
     max_provider_calls = _positive_integer("BAKEOFF_MAX_PROVIDER_CALLS", 30, 100)
-    run_timeout = _positive_float("BAKEOFF_RUN_TIMEOUT_SECONDS", 720.0, 3600.0)
+    run_timeout = _positive_float(
+        "BAKEOFF_RUN_TIMEOUT_SECONDS", 285.0 if arena_mode else 720.0, 3600.0
+    )
     tool_timeout = _positive_float("BAKEOFF_TOOL_TIMEOUT_SECONDS", 90.0, 600.0)
+    max_output_tokens = 4_096 if arena_mode else 15_000
     budget = _ToolBudget(ToolClient(timeout=tool_timeout), max_provider_calls)
 
     def search_companies(
@@ -154,15 +167,20 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
         return budget.call("fetch_page", {"url": url, "max_chars": max_chars})
 
     model_settings: OpenRouterModelSettings = {
-        "max_tokens": 15_000,
+        "max_tokens": max_output_tokens,
         "parallel_tool_calls": False,
         "timeout": 120,
         "openrouter_reasoning": {"effort": "medium"},
-        "openrouter_usage": {"include": True},
     }
+    if not arena_mode:
+        model_settings["openrouter_usage"] = {"include": True}
+    arena_http_client = openrouter_http_client() if arena_mode else None
     model = OpenRouterModel(
         model_name,
-        provider=OpenRouterProvider(api_key=api_key),
+        provider=OpenRouterProvider(
+            api_key=api_key,
+            http_client=arena_http_client,
+        ),
         settings=model_settings,
     )
     agent = Agent(
@@ -219,7 +237,7 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
                     request_limit=30,
                     tool_calls_limit=30,
                     input_tokens_limit=120_000,
-                    output_tokens_limit=15_000,
+                    output_tokens_limit=max_output_tokens,
                 ),
                 usage=run_usage,
             ),
@@ -231,6 +249,8 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
         budget.call("submit_companies", {"companies": companies})
         return companies
     finally:
+        if arena_http_client is not None:
+            await arena_http_client.aclose()
         usage = dataclasses.asdict(run_usage)
         LAST_USAGE.clear()
         LAST_USAGE.update(json.loads(json.dumps(usage, default=str)))
