@@ -5,7 +5,7 @@ from __future__ import annotations
 import ipaddress
 from copy import deepcopy
 from datetime import date as ISODate
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
@@ -53,6 +53,21 @@ class IntentSignal(BaseModel):
         return _public_http_url(value)
 
 
+class RequiredAttributeEvidence(BaseModel):
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    text: str = Field(min_length=1)
+    passed: bool
+    evidence_url: str
+    evidence_quote: str = Field(min_length=1)
+    explanation: str = Field(min_length=1)
+
+    @field_validator("evidence_url")
+    @classmethod
+    def validate_evidence_url(cls, value: str) -> str:
+        return _public_http_url(value)
+
+
 class CompanyResult(BaseModel):
     model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
 
@@ -61,11 +76,13 @@ class CompanyResult(BaseModel):
     company_linkedin: str
     industry: str
     employee_count: str
+    company_stage: str
     country: str
     state: str
     fit_summary: str = Field(min_length=1)
     fit_evidence_urls: list[str]
     intent_signals: list[IntentSignal] = Field(min_length=1)
+    required_attribute: Optional[RequiredAttributeEvidence] = None
 
     @field_validator("company_website")
     @classmethod

@@ -35,6 +35,7 @@ The normal output shape is:
   "company_linkedin": "https://www.linkedin.com/company/example/",
   "industry": "Software",
   "employee_count": "51-200",
+  "company_stage": "Series A",
   "country": "United States",
   "state": "California",
   "fit_summary": "Why the company fits the ICP.",
@@ -46,7 +47,14 @@ The normal output shape is:
     "why_now": "Why a sales representative should contact the company now.",
     "url": "https://example.com/news/event",
     "snippet": "Source text that supports the claim."
-  }]
+  }],
+  "required_attribute": {
+    "text": "The required company characteristic.",
+    "passed": true,
+    "evidence_url": "https://example.com/about",
+    "evidence_quote": "Source text that proves the characteristic.",
+    "explanation": "Why the evidence satisfies the requirement."
+  }
 }
 ```
 

@@ -33,6 +33,7 @@ class HarnessContractTests(unittest.TestCase):
                 "company_linkedin": "",
                 "industry": "Software",
                 "employee_count": "51-200",
+                "company_stage": "Series A",
                 "country": "United States",
                 "state": "California",
                 "fit_summary": "Matches the example ICP.",
@@ -47,6 +48,13 @@ class HarnessContractTests(unittest.TestCase):
                         "snippet": "Example launched the product.",
                     }
                 ],
+                "required_attribute": {
+                    "text": "Uses a product-led sales motion",
+                    "passed": True,
+                    "evidence_url": "https://example.com/about",
+                    "evidence_quote": "Customers can start with a self-service plan.",
+                    "explanation": "The self-service plan supports the required motion.",
+                },
             }
         )
         dumped = company.model_dump(mode="json")
