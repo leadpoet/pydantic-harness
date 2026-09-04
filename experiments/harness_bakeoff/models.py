@@ -24,21 +24,34 @@ def _public_http_url(value: str, *, allow_empty: bool = False) -> str:
     ):
         raise ValueError("must be an absolute HTTP(S) URL")
     host = parsed.hostname.rstrip(".").lower()
-    if host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
+    try:
+        ascii_host = host.encode("idna").decode("ascii")
+        parsed.port
+    except (UnicodeError, ValueError) as exc:
+        raise ValueError("must be a public URL") from exc
+    if host == "localhost" or host.endswith(
+        (".internal", ".invalid", ".local", ".localhost", ".onion", ".test")
+    ):
         raise ValueError("must be a public URL")
     try:
-        address = ipaddress.ip_address(host)
+        address = ipaddress.ip_address(ascii_host)
     except ValueError:
         address = None
     if address is not None and not address.is_global:
         raise ValueError("must be a public URL")
+    if address is None:
+        labels = ascii_host.split(".")
+        if len(labels) < 2 or not any(
+            character.isalpha() for character in labels[-1]
+        ):
+            raise ValueError("must be a public URL")
     return urlunsplit(
         (parsed.scheme.lower(), parsed.netloc, parsed.path or "/", parsed.query, "")
     )
 
 
 class IntentSignal(BaseModel):
-    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     matched_icp_signal: int = Field(ge=0)
     description: str = Field(min_length=1)
@@ -54,7 +67,7 @@ class IntentSignal(BaseModel):
 
 
 class RequiredAttributeEvidence(BaseModel):
-    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     text: str = Field(min_length=1)
     passed: bool
@@ -69,16 +82,16 @@ class RequiredAttributeEvidence(BaseModel):
 
 
 class CompanyResult(BaseModel):
-    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     company_name: str = Field(min_length=1)
     company_website: str
-    company_linkedin: str
+    company_linkedin: str = ""
     industry: str
     employee_count: str
-    company_stage: str
+    company_stage: str = ""
     country: str
-    state: str
+    state: str = ""
     fit_summary: str = Field(min_length=1)
     fit_evidence_urls: list[str]
     intent_signals: list[IntentSignal] = Field(min_length=1)
@@ -101,7 +114,7 @@ class CompanyResult(BaseModel):
 
 
 class CompaniesResult(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
     companies: list[CompanyResult] = Field(default_factory=list)
 
 

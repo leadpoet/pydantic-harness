@@ -4,6 +4,8 @@ import importlib
 import inspect
 import unittest
 
+from pydantic import ValidationError
+
 import harness
 from experiments.harness_bakeoff.models import CompanyResult, validate_companies
 from experiments.harness_bakeoff.worker import MODULES
@@ -63,6 +65,13 @@ class HarnessContractTests(unittest.TestCase):
             CompanyResult.model_validate(dumped).model_dump(mode="json"), dumped
         )
         self.assertEqual(validate_companies([dumped]), [dumped])
+
+        with self.assertRaises(ValidationError):
+            CompanyResult.model_validate({**dumped, "undocumented": True})
+        with self.assertRaises(ValidationError):
+            CompanyResult.model_validate(
+                {**dumped, "company_website": "http://127.0.0.1"}
+            )
 
 
 if __name__ == "__main__":
