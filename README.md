@@ -26,6 +26,33 @@ def run_icp(icp: dict) -> list[dict]:
     """Return up to five best-fit companies, ranked best first."""
 ```
 
+The host passes one JSON object for one daily ICP. `icp_id` is always present
+and non-empty. The current input fields are:
+
+```json
+{
+  "icp_id": "icp_20260904_001",
+  "prompt": "Find software companies with recent momentum.",
+  "industry": "Software",
+  "sub_industry": "SaaS",
+  "geography": "United States",
+  "country": "United States",
+  "employee_count": ["51-200", "201-500"],
+  "company_stage": "Series A",
+  "product_service": "A business platform used by operating teams",
+  "required_attribute": "Sells a business product used by operating teams",
+  "required_intents": [{
+    "signal": "Announced a funding round in the last 12 months",
+    "category": "FUNDING",
+    "max_age_days": 365
+  }],
+  "bonus_intents": []
+}
+```
+
+An agent must accept additional input fields so the host can add descriptive
+ICP data without changing the function signature.
+
 The normal output shape is:
 
 ```json
