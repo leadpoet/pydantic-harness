@@ -6,8 +6,8 @@ The harness takes one ICP and returns up to five companies that match it and
 have a verified, recent intent signal. Each result includes a clear sales-facing
 reason and public evidence URLs.
 
-This repository does not change Leadpoet production or the current daily
-rebenchmark.
+This repository contains no Research Lab deployment or persistence code. A
+host can call its stable entrypoint or the stateless one-shot adapter below.
 
 ## Stable contract
 
@@ -94,6 +94,24 @@ python -m experiments.harness_bakeoff.runner all \
 The smoke phase runs one live one-company attempt. The scored phase runs each
 selected ICP twice. Each attempt uses a fresh process and the same provider,
 token, time, and cost limits. Results must be written outside the repository.
+
+## One-shot host adapter
+
+The stateless host adapter prints one `PYDANTIC_HARNESS_RESULT_JSON=` line for
+reliable parsing. Run its live preflight once per daily batch. Pass the selected
+model and its public pricing to each run; `run` does not repeat the paid model
+probe.
+
+```bash
+python production_runner.py preflight
+python production_runner.py run \
+  --model openai/example \
+  --model-pricing-json '{"prompt":"0.000001","completion":"0.000002"}' \
+  --evaluation-date YYYY-MM-DD < /absolute/path/to/one-icp.json
+```
+
+Each `run` call reads one raw ICP JSON object and starts a fresh `run_icp`
+worker process. The adapter does not deploy code or persist state.
 
 ## Provisional result
 
