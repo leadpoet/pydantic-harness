@@ -1,0 +1,429 @@
+from __future__ import annotations
+
+import asyncio
+import json
+from unittest.mock import patch
+
+import httpx
+import pytest
+
+import arena_transport
+from arena_transport import (
+    ArenaOpenRouterTransport,
+    ArenaToolClient,
+    strip_arena_request_headers,
+)
+from harness import run_icp
+
+
+def test_arena_transport_uses_credential_free_approved_routes() -> None:
+    requests: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/hunter_discover/execute"):
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "result": {
+                        "data": {
+                            "data": [
+                                {
+                                    "organization": "Example",
+                                    "domain": "example.com",
+                                }
+                            ]
+                        }
+                    }
+                },
+            )
+        if request.url.path.endswith("/free_simple_company_search/execute"):
+            return httpx.Response(
+                200,
+                request=request,
+                json={"result": {"data": {"rows": [{"domain": "example.com"}]}}},
+            )
+        if request.url.path.startswith("/api/v2/integrations/predictleads_"):
+            return httpx.Response(
+                200, request=request, json={"result": {"data": {"data": []}}}
+            )
+        if request.url.path == "/google":
+            return httpx.Response(200, request=request, json={"organic_results": []})
+        if request.url.path == "/google_news":
+            return httpx.Response(200, request=request, json={"news_results": []})
+        if request.url.path == "/google_jobs":
+            return httpx.Response(200, request=request, json={"jobs_results": []})
+        if request.url.path == "/scrape":
+            return httpx.Response(
+                200,
+                request=request,
+                text=(
+                    "<html><head><title>Example launch</title>"
+                    "<style>.secret { display: none; }</style>"
+                    "<script>window.secret = 'not evidence';</script></head>"
+                    "<body>Verified event evidence</body></html>"
+                ),
+            )
+        raise AssertionError(f"unexpected route: {request.url}")
+
+    client = httpx.Client(transport=httpx.MockTransport(handle))
+    tools = ArenaToolClient(client=client)
+
+    discovered = tools.search_companies({"query": "vertical SaaS", "limit": 1})
+    profile = tools.get_company_profile({"domain": "example.com"})
+    tools.get_company_events(
+        {
+            "domain": "example.com",
+            "categories": ["HIRING", "FUNDING", "PRODUCT_LAUNCH"],
+        }
+    )
+    for mode in ("search", "news", "jobs"):
+        tools.search_web({"query": "Example intent", "mode": mode, "limit": 1})
+    page = tools.fetch_page({"url": "https://example.com/news/event"})
+
+    assert discovered["companies"][0]["domain"] == "example.com"
+    assert profile["company"]["domain"] == "example.com"
+    assert page["title"] == "Example launch"
+    assert page["text"] == "Verified event evidence"
+    assert [request.url.path for request in requests] == [
+        "/api/v2/integrations/hunter_discover/execute",
+        "/api/v2/integrations/free_simple_company_search/execute",
+        "/api/v2/integrations/predictleads_company_job_openings/execute",
+        "/api/v2/integrations/predictleads_company_financing_events/execute",
+        "/api/v2/integrations/predictleads_company_news_events/execute",
+        "/google",
+        "/google_news",
+        "/google_jobs",
+        "/scrape",
+    ]
+    assert not any("authorization" in request.headers for request in requests)
+    assert not any("api_key" in request.url.params for request in requests)
+
+
+def test_scrapingdog_projection_keeps_evidence_fields_and_caps_query(
+    monkeypatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/google_news":
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "news_results": [
+                        {"title": "No evidence URL"},
+                        {"title": "Relative URL", "link": "/news/item"},
+                        {
+                            "title": "Verified launch",
+                            "link": "https://example.com/news/launch#details",
+                            "extensions": ["2 days ago", "Example newsroom"],
+                        },
+                    ]
+                },
+            )
+        if request.url.path == "/google_jobs":
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "jobs_results": [
+                        {
+                            "title": "Cloud engineer",
+                            "apply_links": [
+                                {"link": "javascript:void(0)"},
+                                {
+                                    "url": "https://jobs.example.com/apply?id=7#form"
+                                },
+                            ],
+                        },
+                        {"title": "Missing application link"},
+                    ]
+                },
+            )
+        raise AssertionError(f"unexpected route: {request.url}")
+
+    monkeypatch.setenv("LAB_ARENA_EVALUATION_DATE", "2026-09-04")
+    tools = ArenaToolClient(
+        client=httpx.Client(transport=httpx.MockTransport(handle))
+    )
+
+    news = tools.search_web(
+        {
+            "query": "x" * 900,
+            "mode": "news",
+            "recency_days": 30,
+            "limit": 5,
+        }
+    )
+    jobs = tools.search_web({"query": "Example", "mode": "jobs", "limit": 5})
+
+    assert news == {
+        "results": [
+            {
+                "title": "Verified launch",
+                "details": ["2 days ago", "Example newsroom"],
+                "url": "https://example.com/news/launch",
+            }
+        ],
+        "count": 1,
+        "mode": "news",
+    }
+    assert jobs == {
+        "results": [
+            {
+                "title": "Cloud engineer",
+                "apply_url": "https://jobs.example.com/apply?id=7",
+                "url": "https://jobs.example.com/apply?id=7",
+            }
+        ],
+        "count": 1,
+        "mode": "jobs",
+    }
+    news_query = requests[0].url.params["query"]
+    assert len(news_query) == 500
+    assert news_query.endswith(" after:2026-08-05")
+    assert requests[1].url.params["query"].endswith(
+        " (jobs OR careers OR hiring)"
+    )
+
+
+def test_openrouter_header_filter_removes_sdk_credentials() -> None:
+    request = httpx.Request(
+        "POST",
+        "http://openrouter.ai/api/v1/chat/completions",
+        headers={
+            "Authorization": "Bearer must-not-cross",
+            "X-Stainless-Runtime": "python",
+            "Content-Type": "application/json",
+        },
+    )
+
+    asyncio.run(strip_arena_request_headers(request))
+
+    assert "authorization" not in request.headers
+    assert "x-stainless-runtime" not in request.headers
+    assert request.headers["content-type"] == "application/json"
+
+
+def test_openrouter_transport_removes_sdk_only_body_fields() -> None:
+    seen: list[httpx.Request] = []
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, request=request, json={})
+
+    async def send() -> None:
+        async with httpx.AsyncClient(
+            transport=ArenaOpenRouterTransport(inner=httpx.MockTransport(handle))
+        ) as client:
+            await client.post(
+                "http://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": "Bearer local-placeholder"},
+                json={
+                    "model": "openai/gpt-5.5",
+                    "stream": False,
+                    "usage": {"include": True},
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": None,
+                            "reasoning": "response-only",
+                            "reasoning_details": [],
+                            "tool_calls": [],
+                        }
+                    ],
+                },
+            )
+
+    asyncio.run(send())
+
+    assert len(seen) == 1
+    body = json.loads(seen[0].content)
+    assert "authorization" not in seen[0].headers
+    assert set(body) == {"model", "messages"}
+    assert body["messages"] == [{"role": "assistant", "tool_calls": []}]
+
+
+def test_public_harness_uses_pydantic_ai_without_a_provider_key(monkeypatch) -> None:
+    seen: list[httpx.Request] = []
+
+    async def model_response(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "id": "generation-1",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "openai/gpt-5.5",
+                "provider": "OpenAI",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "submit_companies",
+                                        "arguments": '{"companies":[]}',
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 15,
+                },
+            },
+        )
+
+    class FakeArenaTools:
+        def __init__(self, timeout: float = 90.0) -> None:
+            self.timeout = timeout
+
+        def call(self, name, arguments):
+            assert name == "submit_companies"
+            assert arguments == {"companies": []}
+            return arguments
+
+        def close(self) -> None:
+            return None
+
+    def model_client(timeout: float) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            transport=ArenaOpenRouterTransport(
+                inner=httpx.MockTransport(model_response)
+            ),
+        )
+
+    monkeypatch.setenv("LAB_ARENA_WORKER_SOCKET", "/tmp/unused-worker.sock")
+    monkeypatch.setenv("BAKEOFF_OPENROUTER_MODEL", "openai/gpt-5.5")
+    monkeypatch.setenv("BAKEOFF_RUN_TIMEOUT_SECONDS", "10")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    with patch.object(arena_transport, "ArenaToolClient", FakeArenaTools):
+        with patch.object(
+            arena_transport, "arena_openrouter_http_client", model_client
+        ):
+            assert run_icp({"icp_id": "today", "intent_signal": "funding"}) == []
+
+    assert len(seen) == 1
+    assert seen[0].url == "http://openrouter.ai/api/v1/chat/completions"
+    assert "authorization" not in seen[0].headers
+    body = json.loads(seen[0].content)
+    assert body["max_tokens"] == 4_096
+    assert body["reasoning"] == {"effort": "medium", "exclude": True}
+    assert "stream" not in body
+    assert "usage" not in body
+
+
+def test_arena_company_limit_is_forwarded_to_the_prompt(monkeypatch) -> None:
+    prompts: list[str] = []
+
+    async def model_response(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        prompts.append(body["messages"][-1]["content"])
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "id": "generation-1",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "openai/gpt-5.5",
+                "provider": "OpenAI",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "submit_companies",
+                                        "arguments": '{"companies":[]}',
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 15,
+                },
+            },
+        )
+
+    class FakeArenaTools:
+        def __init__(self, timeout: float = 90.0) -> None:
+            self.timeout = timeout
+
+        def call(self, name, arguments):
+            return arguments
+
+        def close(self) -> None:
+            return None
+
+    def model_client(timeout: float) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            transport=ArenaOpenRouterTransport(
+                inner=httpx.MockTransport(model_response)
+            ),
+        )
+
+    monkeypatch.setenv("LAB_ARENA_WORKER_SOCKET", "/tmp/unused-worker.sock")
+    monkeypatch.setenv("LAB_ARENA_COMPANY_LIMIT", "2")
+    monkeypatch.setenv("BAKEOFF_OPENROUTER_MODEL", "openai/gpt-5.5")
+    monkeypatch.setenv("BAKEOFF_RUN_TIMEOUT_SECONDS", "10")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    with patch.object(arena_transport, "ArenaToolClient", FakeArenaTools):
+        with patch.object(
+            arena_transport, "arena_openrouter_http_client", model_client
+        ):
+            assert run_icp({"icp_id": "today", "intent_signal": "funding"}) == []
+
+    assert prompts and "Return up to 2 companies." in prompts[0]
+
+
+def test_arena_client_closes_when_model_transport_setup_fails(monkeypatch) -> None:
+    closed: list[bool] = []
+
+    class FakeArenaTools:
+        def __init__(self, timeout: float = 90.0) -> None:
+            self.timeout = timeout
+
+        def close(self) -> None:
+            closed.append(True)
+
+    def fail_model_client(timeout: float) -> httpx.AsyncClient:
+        raise RuntimeError(f"transport setup failed after {timeout:g} seconds")
+
+    monkeypatch.setenv("LAB_ARENA_WORKER_SOCKET", "/tmp/unused-worker.sock")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    with patch.object(arena_transport, "ArenaToolClient", FakeArenaTools):
+        with patch.object(
+            arena_transport,
+            "arena_openrouter_http_client",
+            fail_model_client,
+        ):
+            with pytest.raises(RuntimeError, match="transport setup failed"):
+                run_icp({"icp_id": "today", "intent_signal": "funding"})
+
+    assert closed == [True]

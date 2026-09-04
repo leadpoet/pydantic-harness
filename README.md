@@ -109,6 +109,10 @@ It does not need a Dockerfile, command-line adapter, Git commit, source
 identity, receipt, manifest, replay proof, or GitHub attestation. The upload
 checksum is used only to detect a damaged transfer.
 
+Submit this source repository to the Arena as the public baseline or use it as
+the starting point for a miner fork. The host imports `harness.run_icp` and
+supplies provider access through its worker socket.
+
 ## Install
 
 Use Python 3.11 or newer and Node.js 20 or newer.
@@ -116,12 +120,12 @@ Use Python 3.11 or newer and Node.js 20 or newer.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements.txt
+python -m pip install -r requirements.txt -r requirements-local.txt
 npm ci --prefix experiments/harness_bakeoff/deepline
 export BAKEOFF_DEEPLINE_BIN="$PWD/experiments/harness_bakeoff/deepline/node_modules/.bin/deepline"
 ```
 
-For standalone testing only, set `OPENROUTER_API_KEY`, `DEEPLINE_API_KEY`, and
+For the local runner only, set `OPENROUTER_API_KEY`, `DEEPLINE_API_KEY`, and
 `SCRAPINGDOG_API_KEY` in the process environment. `EXA_API_KEY` is optional.
 The Arena adapter does not read these keys. Do not commit keys or private ICP
 data.

@@ -16,7 +16,11 @@ SYSTEM_PROMPT = """You are a rigorous B2B account researcher. Find companies tha
 def build_prompt(icp: dict[str, Any], max_companies: int | None = None) -> str:
     normalized = normalize_icp(icp)
     limit = max(1, min(int(max_companies or 5), 5))
-    raw_day = os.environ.get("BAKEOFF_EVALUATION_DATE", "").strip()
+    raw_day = (
+        os.environ.get("BAKEOFF_EVALUATION_DATE")
+        or os.environ.get("LAB_ARENA_EVALUATION_DATE")
+        or ""
+    ).strip()
     evaluation_date = date.fromisoformat(raw_day) if raw_day else date.today()
     return (
         f"Evaluation date: {evaluation_date.isoformat()}\n"
