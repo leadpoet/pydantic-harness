@@ -6,8 +6,8 @@ The harness takes one ICP and returns up to five companies that match it and
 have a verified, recent intent signal. Each result includes a clear sales-facing
 reason and public evidence URLs.
 
-This repository contains no Research Lab deployment or persistence code. A
-host can call its stable function or run it through the Arena file adapter.
+This repository contains no Research Lab deployment or persistence code. The
+competition host calls the stable function directly.
 
 ## Stable contract
 
@@ -64,53 +64,23 @@ The harness can use these tools: `search_companies`, `get_company_profile`,
 ## Miner competition contract
 
 Miners can fork this repository and change the model, harness, prompts,
-routing, tools, and dependencies. The subnet requires only this final callable:
+routing, tools, and dependencies. Submit the source folder through the miner
+menu. The subnet requires only a top-level `harness.py` with this callable:
 
 ```python
 def run_icp(icp: dict) -> list[dict]:
     """Return up to five companies, ranked best first."""
 ```
 
-Each returned company must use the output fields shown in the stable contract
-above. A submission must also contain an executable `/agent/run`. The included
-[`agent/run`](agent/run) is the reference adapter. It reads
-`/input/icp.json`, calls `run_icp`, and writes `/output/companies.json`.
+The host passes one ordinary ICP dictionary and validates the returned list
+against the output fields shown above. It also supplies approved provider API
+access and enforces the same time, call, and cost limits for the baseline and
+all miner submissions. Provider keys are never put in a submission.
 
-The Arena input file has this shape:
-
-```json
-{
-  "schema_version": "leadpoet.lab_arena.icp_input.v1",
-  "icp": {"icp_id": "daily-icp-id"},
-  "evaluation_date": "2026-09-04",
-  "company_limit": 5,
-  "provider_operations": ["openrouter.chat", "exa.search"]
-}
-```
-
-The adapter writes this shape:
-
-```json
-{
-  "schema_version": "leadpoet.lab_arena.output.v1",
-  "companies": []
-}
-```
-
-The host sets `LAB_ARENA_WORKER_SOCKET`. Provider calls contain only an
-operation name and ordinary JSON parameters. The host adds its approved
-provider credentials and enforces the same time, call, and cost limits for the
-baseline and miner submissions. A submission does not receive provider keys.
-
-Build the reference Linux AMD64 image with:
-
-```bash
-docker build --platform linux/amd64 -t your-registry/pydantic-harness:latest .
-```
-
-The competition does not require a Git commit, source digest, receipt,
-manifest, replay proof, or GitHub attestation. The Arena can pin ordinary OCI
-image bytes for the duration of one round so a run does not change midway.
+The source folder can contain normal local modules and a `requirements.txt`.
+It does not need a Dockerfile, command-line adapter, Git commit, source
+identity, receipt, manifest, replay proof, or GitHub attestation. The upload
+checksum is used only to detect a damaged transfer.
 
 ## Install
 
@@ -119,8 +89,7 @@ Use Python 3.11 or newer and Node.js 20 or newer.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements.txt \
-  -r experiments/harness_bakeoff/adapters/requirements-pydantic-ai.txt
+python -m pip install -r requirements.txt
 npm ci --prefix experiments/harness_bakeoff/deepline
 export BAKEOFF_DEEPLINE_BIN="$PWD/experiments/harness_bakeoff/deepline/node_modules/.bin/deepline"
 ```

@@ -1,7 +1,0 @@
-#!/usr/bin/env python3
-"""Fixed Leadpoet Arena executable."""
-
-from arena_entrypoint import main
-
-
-raise SystemExit(main())
