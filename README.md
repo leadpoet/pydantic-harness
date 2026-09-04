@@ -7,7 +7,7 @@ have a verified, recent intent signal. Each result includes a clear sales-facing
 reason and public evidence URLs.
 
 This repository contains no Research Lab deployment or persistence code. A
-host can call its stable entrypoint or the stateless one-shot adapter below.
+host can call its stable entrypoint or use the local one-shot adapter below.
 
 ## Stable contract
 
@@ -58,9 +58,16 @@ The normal output shape is:
 }
 ```
 
-The host supplies these tools as plain JSON: `search_companies`,
+The harness uses these tools as plain JSON: `search_companies`,
 `get_company_profile`, `get_company_events`, `search_web`, `fetch_page`, and
 `submit_companies`.
+
+## Agent Arena bundle
+
+Submit this source repository to the Arena. The host imports
+`harness.run_icp`, supplies provider access through its worker socket, and
+enforces the competition limits. The source receives no provider keys and
+does not need a Dockerfile or deployment manifest.
 
 ## Install
 
@@ -69,15 +76,14 @@ Use Python 3.11 or newer and Node.js 20 or newer.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements.txt \
-  -r experiments/harness_bakeoff/adapters/requirements-pydantic-ai.txt
+python -m pip install -r requirements.txt -r requirements-local.txt
 npm ci --prefix experiments/harness_bakeoff/deepline
 export BAKEOFF_DEEPLINE_BIN="$PWD/experiments/harness_bakeoff/deepline/node_modules/.bin/deepline"
 ```
 
-Set `OPENROUTER_API_KEY`, `DEEPLINE_API_KEY`, and `SCRAPINGDOG_API_KEY` in the
-process environment. `EXA_API_KEY` is optional. Do not commit keys or private
-ICP data.
+For the local runner only, set `OPENROUTER_API_KEY`, `DEEPLINE_API_KEY`, and
+`SCRAPINGDOG_API_KEY` in the process environment. `EXA_API_KEY` is optional.
+Do not commit keys or private ICP data.
 
 ## Run live sourcing
 

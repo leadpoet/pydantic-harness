@@ -12,7 +12,7 @@ from .models import validate_companies
 
 
 MODULES = {
-    "pydantic_ai": "experiments.harness_bakeoff.adapters.pydantic_ai",
+    "pydantic_ai": "harness",
 }
 SENTINEL = "BAKEOFF_RESULT_JSON="
 

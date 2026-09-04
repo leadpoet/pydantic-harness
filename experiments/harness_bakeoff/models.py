@@ -23,29 +23,40 @@ def _public_http_url(value: str, *, allow_empty: bool = False) -> str:
         or parsed.password
     ):
         raise ValueError("must be an absolute HTTP(S) URL")
-    host = parsed.hostname.rstrip(".").lower()
-    if host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
+    try:
+        host = parsed.hostname.rstrip(".").lower()
+        ascii_host = host.encode("idna").decode("ascii")
+        parsed.port
+    except (UnicodeError, ValueError) as exc:
+        raise ValueError("must be a public URL") from exc
+    if host == "localhost" or host.endswith(
+        (".internal", ".invalid", ".local", ".localhost", ".onion", ".test")
+    ):
         raise ValueError("must be a public URL")
     try:
-        address = ipaddress.ip_address(host)
+        address = ipaddress.ip_address(ascii_host)
     except ValueError:
         address = None
     if address is not None and not address.is_global:
         raise ValueError("must be a public URL")
+    if address is None:
+        labels = ascii_host.split(".")
+        if len(labels) < 2 or not any(character.isalpha() for character in labels[-1]):
+            raise ValueError("must be a public URL")
     return urlunsplit(
         (parsed.scheme.lower(), parsed.netloc, parsed.path or "/", parsed.query, "")
     )
 
 
 class IntentSignal(BaseModel):
-    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     matched_icp_signal: int = Field(ge=0)
-    description: str = Field(min_length=1)
+    description: str = Field(min_length=1, max_length=350)
     date: ISODate
-    why_now: str = Field(min_length=1)
+    why_now: str = Field(min_length=1, max_length=600)
     url: str
-    snippet: str = Field(min_length=1)
+    snippet: str = Field(min_length=1, max_length=600)
 
     @field_validator("url")
     @classmethod
@@ -54,13 +65,13 @@ class IntentSignal(BaseModel):
 
 
 class RequiredAttributeEvidence(BaseModel):
-    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    text: str = Field(min_length=1)
+    text: str = Field(min_length=1, max_length=2_000)
     passed: bool
     evidence_url: str
-    evidence_quote: str = Field(min_length=1)
-    explanation: str = Field(min_length=1)
+    evidence_quote: str = Field(min_length=1, max_length=2_000)
+    explanation: str = Field(min_length=1, max_length=2_000)
 
     @field_validator("evidence_url")
     @classmethod
@@ -69,17 +80,17 @@ class RequiredAttributeEvidence(BaseModel):
 
 
 class CompanyResult(BaseModel):
-    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    company_name: str = Field(min_length=1)
+    company_name: str = Field(min_length=1, max_length=200)
     company_website: str
-    company_linkedin: str
+    company_linkedin: str = ""
     industry: str
     employee_count: str
-    company_stage: str
+    company_stage: str = ""
     country: str
-    state: str
-    fit_summary: str = Field(min_length=1)
+    state: str = ""
+    fit_summary: str = Field(min_length=1, max_length=500)
     fit_evidence_urls: list[str]
     intent_signals: list[IntentSignal] = Field(min_length=1)
     required_attribute: Optional[RequiredAttributeEvidence] = None
@@ -92,7 +103,18 @@ class CompanyResult(BaseModel):
     @field_validator("company_linkedin")
     @classmethod
     def validate_linkedin(cls, value: str) -> str:
-        return _public_http_url(value, allow_empty=True)
+        normalized = _public_http_url(value, allow_empty=True)
+        if not normalized:
+            return ""
+        parsed = urlsplit(normalized)
+        host = (parsed.hostname or "").lower()
+        parts = [part for part in parsed.path.split("/") if part]
+        if (
+            host != "linkedin.com"
+            and not host.endswith(".linkedin.com")
+        ) or len(parts) != 2 or parts[0].lower() != "company":
+            raise ValueError("must be a LinkedIn company URL")
+        return normalized
 
     @field_validator("fit_evidence_urls")
     @classmethod
@@ -101,7 +123,7 @@ class CompanyResult(BaseModel):
 
 
 class CompaniesResult(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
     companies: list[CompanyResult] = Field(default_factory=list)
 
 

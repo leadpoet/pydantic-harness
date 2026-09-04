@@ -9,6 +9,8 @@ import os
 from decimal import Decimal
 from typing import Any
 
+import httpx
+from openai import AsyncOpenAI
 from pydantic_ai import Agent, Tool, ToolOutput
 from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 from pydantic_ai.providers.openrouter import OpenRouterProvider
@@ -76,16 +78,53 @@ class _ToolBudget:
 
 
 async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
-    api_key = _required_environment("OPENROUTER_API_KEY")
+    arena_mode = bool(str(os.environ.get("LAB_ARENA_WORKER_SOCKET") or "").strip())
+    api_key = "arena-host" if arena_mode else _required_environment("OPENROUTER_API_KEY")
     model_name = os.environ.get("BAKEOFF_OPENROUTER_MODEL", DEFAULT_MODEL).strip()
     if not model_name:
         raise RuntimeError("BAKEOFF_OPENROUTER_MODEL cannot be empty")
 
-    max_companies = _positive_integer("BAKEOFF_MAX_COMPANIES", 5, 5)
+    max_companies = _positive_integer(
+        "LAB_ARENA_COMPANY_LIMIT" if arena_mode else "BAKEOFF_MAX_COMPANIES",
+        5,
+        5,
+    )
     max_provider_calls = _positive_integer("BAKEOFF_MAX_PROVIDER_CALLS", 30, 100)
-    run_timeout = _positive_float("BAKEOFF_RUN_TIMEOUT_SECONDS", 720.0, 3600.0)
+    run_timeout = _positive_float(
+        "BAKEOFF_RUN_TIMEOUT_SECONDS",
+        285.0 if arena_mode else 720.0,
+        3600.0,
+    )
     tool_timeout = _positive_float("BAKEOFF_TOOL_TIMEOUT_SECONDS", 90.0, 600.0)
-    budget = _ToolBudget(ToolClient(timeout=tool_timeout), max_provider_calls)
+    tool_client: Any = None
+    arena_http_client: httpx.AsyncClient | None = None
+
+    async def close_resources() -> None:
+        close = getattr(tool_client, "close", None)
+        if callable(close):
+            close()
+        if arena_http_client is not None:
+            await arena_http_client.aclose()
+
+    try:
+        if arena_mode:
+            from arena_transport import ArenaToolClient, arena_openrouter_http_client
+
+            tool_client = ArenaToolClient(timeout=tool_timeout)
+            arena_http_client = arena_openrouter_http_client(timeout=120.0)
+            openai_client = AsyncOpenAI(
+                api_key=api_key,
+                base_url="http://openrouter.ai/api/v1",
+                http_client=arena_http_client,
+            )
+            provider = OpenRouterProvider(openai_client=openai_client)
+        else:
+            tool_client = ToolClient(timeout=tool_timeout)
+            provider = OpenRouterProvider(api_key=api_key)
+    except Exception:
+        await close_resources()
+        raise
+    budget = _ToolBudget(tool_client, max_provider_calls)
 
     def search_companies(
         query: str,
@@ -154,61 +193,65 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
         return budget.call("fetch_page", {"url": url, "max_chars": max_chars})
 
     model_settings: OpenRouterModelSettings = {
-        "max_tokens": 15_000,
+        "max_tokens": 4_096 if arena_mode else 15_000,
         "parallel_tool_calls": False,
         "timeout": 120,
-        "openrouter_reasoning": {"effort": "medium"},
+        "openrouter_reasoning": {"effort": "medium", "exclude": arena_mode},
         "openrouter_usage": {"include": True},
     }
-    model = OpenRouterModel(
-        model_name,
-        provider=OpenRouterProvider(api_key=api_key),
-        settings=model_settings,
-    )
-    agent = Agent(
-        model,
-        instructions=SYSTEM_PROMPT,
-        tools=[
-            Tool.from_schema(
-                search_companies,
-                "search_companies",
-                TOOL_DESCRIPTIONS["search_companies"],
-                tool_input_schema("search_companies"),
+    try:
+        model = OpenRouterModel(
+            model_name,
+            provider=provider,
+            settings=model_settings,
+        )
+        agent = Agent(
+            model,
+            instructions=SYSTEM_PROMPT,
+            tools=[
+                Tool.from_schema(
+                    search_companies,
+                    "search_companies",
+                    TOOL_DESCRIPTIONS["search_companies"],
+                    tool_input_schema("search_companies"),
+                ),
+                Tool.from_schema(
+                    get_company_profile,
+                    "get_company_profile",
+                    TOOL_DESCRIPTIONS["get_company_profile"],
+                    tool_input_schema("get_company_profile"),
+                ),
+                Tool.from_schema(
+                    get_company_events,
+                    "get_company_events",
+                    TOOL_DESCRIPTIONS["get_company_events"],
+                    tool_input_schema("get_company_events"),
+                ),
+                Tool.from_schema(
+                    search_web,
+                    "search_web",
+                    TOOL_DESCRIPTIONS["search_web"],
+                    tool_input_schema("search_web"),
+                ),
+                Tool.from_schema(
+                    fetch_page,
+                    "fetch_page",
+                    TOOL_DESCRIPTIONS["fetch_page"],
+                    tool_input_schema("fetch_page"),
+                ),
+            ],
+            output_type=ToolOutput(
+                CompaniesResult,
+                name="submit_companies",
+                description=TOOL_DESCRIPTIONS["submit_companies"],
+                strict=True,
             ),
-            Tool.from_schema(
-                get_company_profile,
-                "get_company_profile",
-                TOOL_DESCRIPTIONS["get_company_profile"],
-                tool_input_schema("get_company_profile"),
-            ),
-            Tool.from_schema(
-                get_company_events,
-                "get_company_events",
-                TOOL_DESCRIPTIONS["get_company_events"],
-                tool_input_schema("get_company_events"),
-            ),
-            Tool.from_schema(
-                search_web,
-                "search_web",
-                TOOL_DESCRIPTIONS["search_web"],
-                tool_input_schema("search_web"),
-            ),
-            Tool.from_schema(
-                fetch_page,
-                "fetch_page",
-                TOOL_DESCRIPTIONS["fetch_page"],
-                tool_input_schema("fetch_page"),
-            ),
-        ],
-        output_type=ToolOutput(
-            CompaniesResult,
-            name="submit_companies",
-            description=TOOL_DESCRIPTIONS["submit_companies"],
-            strict=True,
-        ),
-        model_settings=model_settings,
-        tool_timeout=tool_timeout,
-    )
+            model_settings=model_settings,
+            tool_timeout=tool_timeout,
+        )
+    except Exception:
+        await close_resources()
+        raise
     run_usage = RunUsage()
     try:
         result = await asyncio.wait_for(
@@ -231,6 +274,7 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
         budget.call("submit_companies", {"companies": companies})
         return companies
     finally:
+        await close_resources()
         usage = dataclasses.asdict(run_usage)
         LAST_USAGE.clear()
         LAST_USAGE.update(json.loads(json.dumps(usage, default=str)))
