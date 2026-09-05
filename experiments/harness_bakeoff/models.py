@@ -8,7 +8,89 @@ from datetime import date as ISODate
 from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    field_validator,
+)
+
+
+_EMPLOYEE_BANDS = (
+    "0-1",
+    "2-10",
+    "11-50",
+    "51-200",
+    "201-500",
+    "501-1,000",
+    "1,001-5,000",
+    "5,001-10,000",
+    "10,001+",
+)
+
+
+def _canonical_employee_band(value: Any) -> Any:
+    """Normalize formatting only; never move a company to a nearby bucket."""
+    if not isinstance(value, str):
+        return value
+    text = (
+        " ".join(value.strip().split())
+        .lower()
+        .replace("employees", "")
+        .replace("employee", "")
+        .replace("\u2013", "-")
+        .replace("\u2014", "-")
+        .replace(",", "")
+        .replace(" ", "")
+    )
+    canonical = {
+        band.lower().replace(",", "").replace(" ", ""): band
+        for band in _EMPLOYEE_BANDS
+    }
+    return canonical.get(text, value)
+
+
+def _canonical_company_stage(value: Any) -> Any:
+    """Normalize true stage synonyms to the scorer's public stage buckets."""
+    if not isinstance(value, str):
+        return value
+    text = " ".join(value.strip().lower().split())
+    compact = " ".join(
+        text.replace("-", " ").replace("_", " ").replace("/", " ").split()
+    )
+    if compact == "seed":
+        return "Seed"
+    if compact == "bootstrapped":
+        return "Bootstrapped"
+    if compact in {"series a", "series a round"}:
+        return "Series A"
+    if compact in {"series b", "series b round"}:
+        return "Series B"
+    if compact in {
+        "series c+",
+        "series c or later",
+        "series c and later",
+        "series c plus",
+        "series c",
+        "series d",
+        "series e",
+        "series f",
+        "series g",
+        "series h",
+    }:
+        return "Series C+"
+    if compact in {
+        "private equity",
+        "private equity backed",
+        "private equity owned",
+        "pe backed",
+        "pe owned",
+    }:
+        return "Private Equity"
+    if compact in {"public", "public company", "publicly traded", "listed company"}:
+        return "Public"
+    return value
 
 
 def _public_http_url(value: str, *, allow_empty: bool = False) -> str:
@@ -86,8 +168,16 @@ class CompanyResult(BaseModel):
     company_website: str
     company_linkedin: str = ""
     industry: str
-    employee_count: str
-    company_stage: str = ""
+    employee_count: str = Field(
+        description="Use a canonical LinkedIn bucket when the ICP requires one."
+    )
+    company_stage: str = Field(
+        default="",
+        description=(
+            "Verified lifecycle stage; use Seed, Series A, Series B, Series C+, "
+            "Private Equity, Public, or Bootstrapped when one of those ICP stages applies."
+        ),
+    )
     country: str
     state: str = ""
     fit_summary: str = Field(min_length=1, max_length=500)
@@ -120,6 +210,16 @@ class CompanyResult(BaseModel):
     @classmethod
     def validate_fit_urls(cls, values: list[str]) -> list[str]:
         return [_public_http_url(value) for value in values]
+
+    @field_validator("employee_count", mode="before")
+    @classmethod
+    def normalize_employee_band(cls, value: Any) -> Any:
+        return _canonical_employee_band(value)
+
+    @field_validator("company_stage", mode="before")
+    @classmethod
+    def normalize_company_stage(cls, value: Any) -> Any:
+        return _canonical_company_stage(value)
 
 
 class CompaniesResult(BaseModel):
@@ -163,72 +263,125 @@ def _employee_bands(value: Any) -> list[str]:
     return [str(item).strip() for item in raw if str(item).strip()]
 
 
-def _intent_rows(icp: dict[str, Any]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    explicit = icp.get("required_intents")
-    if isinstance(explicit, list):
-        for item in explicit:
-            if isinstance(item, dict):
-                rows.append(dict(item))
-    if not rows:
-        texts = icp.get("intent_signals")
-        categories = icp.get("intent_signal_evidence_types")
-        ages = icp.get("intent_signal_max_age_days")
-        if isinstance(texts, list):
-            for index, text in enumerate(texts):
-                rows.append(
-                    {
-                        "signal": text,
-                        "category": (
-                            categories[index]
-                            if isinstance(categories, list) and index < len(categories)
-                            else icp.get("intent_category") if len(texts) == 1 else ""
-                        ),
-                        "max_age_days": (
-                            ages[index]
-                            if isinstance(ages, list) and index < len(ages)
-                            else (
-                                icp.get("intent_max_age_days")
-                                if len(texts) == 1
-                                else None
-                            )
-                        ),
-                    }
-                )
-    if not rows:
-        signal = icp.get("intent_signal_text") or icp.get("intent_signal")
-        if signal:
-            rows.append(
-                {
-                    "signal": signal,
-                    "category": icp.get("intent_category")
-                    or icp.get("intent_source")
-                    or "",
-                    "max_age_days": icp.get("intent_max_age_days"),
-                }
-            )
-    clean: list[dict[str, Any]] = []
-    for row in rows:
-        signal = str(
-            row.get("signal") or row.get("intent_signal") or row.get("text") or ""
-        ).strip()
-        if not signal:
-            continue
-        age = row.get("max_age_days", row.get("intent_max_age_days"))
-        try:
-            age = int(age) if age not in (None, "") else None
-        except (TypeError, ValueError):
-            age = None
-        clean.append(
-            {
-                "signal": signal,
-                "category": str(row.get("category") or row.get("intent_category") or "")
-                .strip()
-                .upper(),
-                "max_age_days": age,
-            }
+def _intent_text(value: Any) -> str:
+    if isinstance(value, dict):
+        value = value.get("signal") or value.get("intent_signal") or value.get("text")
+    return str(value or "").strip()
+
+
+def _clean_intent_row(
+    value: Any, *, fallback_category: Any = "", fallback_age: Any = None
+) -> dict[str, Any] | None:
+    row = value if isinstance(value, dict) else {"signal": value}
+    signal = _intent_text(row)
+    if not signal:
+        return None
+    category = str(
+        row.get("category")
+        or row.get("intent_category")
+        or row.get("evidence_type")
+        or fallback_category
+        or ""
+    ).strip().upper()
+    age = row.get("max_age_days", row.get("intent_max_age_days", fallback_age))
+    try:
+        age = int(age) if age not in (None, "") else None
+    except (TypeError, ValueError):
+        age = None
+    return {"signal": signal, "category": category, "max_age_days": age}
+
+
+def _structured_intents(
+    icp: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return explicit required rows and explicit bonus rows."""
+    required = [
+        row
+        for value in (
+            icp.get("required_intents")
+            if isinstance(icp.get("required_intents"), list)
+            else []
         )
-    return clean
+        if (row := _clean_intent_row(value)) is not None
+    ]
+    bonuses = [
+        row
+        for value in (
+            icp.get("bonus_intents")
+            if isinstance(icp.get("bonus_intents"), list)
+            else []
+        )
+        if (row := _clean_intent_row(value)) is not None
+    ]
+    return required, bonuses
+
+
+def _intent_contract(icp: dict[str, Any]) -> list[dict[str, Any]]:
+    """Preserve host signal indexes while separating required and bonus intent."""
+    explicit_required, explicit_bonuses = _structured_intents(icp)
+    required_by_text = {row["signal"]: row for row in explicit_required}
+    bonus_by_text = {row["signal"]: row for row in explicit_bonuses}
+
+    raw_signals = icp.get("intent_signals")
+    if isinstance(raw_signals, (str, dict)):
+        raw_signals = [raw_signals]
+    ordered_values = list(raw_signals) if isinstance(raw_signals, list) else []
+    if not ordered_values:
+        ordered_values.extend(explicit_required)
+        ordered_values.extend(explicit_bonuses)
+    else:
+        ordered_texts = {_intent_text(value) for value in ordered_values}
+        for row in (*explicit_required, *explicit_bonuses):
+            if row["signal"] not in ordered_texts:
+                ordered_values.append(row)
+                ordered_texts.add(row["signal"])
+    if not ordered_values:
+        primary = icp.get("intent_signal_text") or icp.get("intent_signal")
+        if primary:
+            ordered_values.append(primary)
+
+    categories = icp.get("intent_signal_evidence_types")
+    ages = icp.get("intent_signal_max_age_days")
+    explicit_required_texts = set(required_by_text)
+    contract: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, value in enumerate(ordered_values):
+        signal = _intent_text(value)
+        if not signal or signal in seen:
+            continue
+        seen.add(signal)
+        metadata = required_by_text.get(signal) or bonus_by_text.get(signal) or {}
+        aligned_category = (
+            categories[index]
+            if isinstance(categories, list) and index < len(categories)
+            else ""
+        )
+        aligned_age = (
+            ages[index] if isinstance(ages, list) and index < len(ages) else None
+        )
+        primary_category = (
+            icp.get("intent_category") or icp.get("intent_source") or ""
+            if index == 0
+            else ""
+        )
+        primary_age = icp.get("intent_max_age_days") if index == 0 else None
+        row = _clean_intent_row(
+            value,
+            fallback_category=(
+                metadata.get("category") or aligned_category or primary_category
+            ),
+            fallback_age=(
+                metadata.get("max_age_days")
+                if metadata.get("max_age_days") is not None
+                else aligned_age if aligned_age is not None else primary_age
+            ),
+        )
+        if row is None:
+            continue
+        row["index"] = len(contract)
+        row["required"] = not contract or signal in explicit_required_texts
+        contract.append(row)
+    return contract
 
 
 def normalize_icp(value: dict[str, Any]) -> dict[str, Any]:
@@ -237,15 +390,24 @@ def normalize_icp(value: dict[str, Any]) -> dict[str, Any]:
         raise TypeError("icp must be a dictionary")
     icp = deepcopy(value)
     icp["employee_count"] = _employee_bands(icp.get("employee_count"))
-    intents = _intent_rows(icp)
-    icp["required_intents"] = intents
-    if intents:
-        icp["intent_signal"] = intents[0]["signal"]
-        icp["intent_category"] = intents[0]["category"]
-        icp["intent_max_age_days"] = intents[0]["max_age_days"]
-    icp["bonus_intents"] = [
-        dict(row) for row in icp.get("bonus_intents", []) if isinstance(row, dict)
+    contract = _intent_contract(icp)
+    icp["intent_contract"] = contract
+    icp["intent_signals"] = [row["signal"] for row in contract]
+    icp["required_intents"] = [
+        {key: row[key] for key in ("signal", "category", "max_age_days")}
+        for row in contract
+        if row["required"]
     ]
+    icp["bonus_intents"] = [
+        {key: row[key] for key in ("signal", "category", "max_age_days")}
+        for row in contract
+        if not row["required"]
+    ]
+    if contract:
+        primary = contract[0]
+        icp["intent_signal"] = primary["signal"]
+        icp["intent_category"] = primary["category"]
+        icp["intent_max_age_days"] = primary["max_age_days"]
     return icp
 
 

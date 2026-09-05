@@ -11,9 +11,11 @@ from typing import Any
 
 import httpx
 from openai import AsyncOpenAI
-from pydantic_ai import Agent, Tool, ToolOutput
+from pydantic_ai import Agent, RunContext, Tool, ToolOutput, messages
+from pydantic_ai.capabilities import PrepareTools, ProcessHistory
 from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 from pydantic_ai.providers.openrouter import OpenRouterProvider
+from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 from experiments.harness_bakeoff.models import CompaniesResult, validate_companies
@@ -27,6 +29,210 @@ from experiments.harness_bakeoff.tool_contract import (
 
 DEFAULT_MODEL = "openai/gpt-5.6-sol"
 LAST_USAGE: dict[str, Any] = {}
+_RESEARCH_TOOL_NAMES = frozenset(
+    {
+        "search_companies",
+        "get_company_profile",
+        "get_company_events",
+        "search_web",
+        "fetch_page",
+    }
+)
+_COMPACTABLE_TOOL_NAMES = _RESEARCH_TOOL_NAMES - {"fetch_page"}
+_MAX_PRIOR_TOOL_RESULT_BYTES = 1_200
+_FINALIZE_INPUT_TOKENS = 82_000
+_FINALIZE_REQUESTS = 22
+_FINALIZE_TOOL_CALLS = 24
+_FINALIZE_MARKER = "[research-budget-reserve]"
+_FINALIZE_PROMPT = (
+    f"{_FINALIZE_MARKER} Research is complete because the run must reserve capacity "
+    "for its final structured output. Do not request more research tools. Call "
+    "submit_companies now with only the strongest companies supported by evidence already "
+    "collected. Preserve exact evidence dates, URLs, and quotes. Omit any company that is "
+    "not fully verified; do not invent missing facts."
+)
+
+
+def _json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=False, separators=(",", ":"), default=str
+    ).encode("utf-8")
+
+
+def _key_priority(key: Any) -> tuple[int, str]:
+    normalized = str(key).lower()
+    if any(token in normalized for token in ("url", "link", "domain", "website")):
+        return (0, normalized)
+    if any(
+        token in normalized
+        for token in ("date", "time", "quote", "snippet", "title", "description")
+    ):
+        return (1, normalized)
+    if any(
+        token in normalized
+        for token in (
+            "company",
+            "name",
+            "industry",
+            "employee",
+            "stage",
+            "country",
+            "state",
+            "location",
+        )
+    ):
+        return (2, normalized)
+    return (3, normalized)
+
+
+def _compact_tool_value(
+    value: Any,
+    *,
+    string_chars: int,
+    list_items: int,
+    dict_items: int,
+    depth: int = 0,
+    field_name: str = "",
+) -> Any:
+    if depth > 7:
+        return "[truncated]"
+    if isinstance(value, str):
+        if any(
+            token in field_name.lower()
+            for token in ("url", "link", "domain", "website", "date", "time")
+        ):
+            return value
+        return value if len(value) <= string_chars else value[:string_chars] + "..."
+    if isinstance(value, list):
+        return [
+            _compact_tool_value(
+                item,
+                string_chars=string_chars,
+                list_items=list_items,
+                dict_items=dict_items,
+                depth=depth + 1,
+                field_name=field_name,
+            )
+            for item in value[:list_items]
+        ]
+    if isinstance(value, dict):
+        prioritized = sorted(value.items(), key=lambda item: _key_priority(item[0]))
+        return {
+            str(key): _compact_tool_value(
+                item,
+                string_chars=string_chars,
+                list_items=list_items,
+                dict_items=dict_items,
+                depth=depth + 1,
+                field_name=str(key),
+            )
+            for key, item in prioritized[:dict_items]
+        }
+    return value
+
+
+def _bounded_history_tool_result(value: Any) -> Any:
+    """Keep prior evidence useful without replaying full provider payloads forever."""
+
+    if len(_json_bytes(value)) <= _MAX_PRIOR_TOOL_RESULT_BYTES:
+        return value
+    for string_chars, list_items, dict_items in (
+        (320, 5, 40),
+        (180, 5, 30),
+        (120, 4, 24),
+        (80, 3, 18),
+        (60, 2, 14),
+        (60, 1, 10),
+    ):
+        compacted = _compact_tool_value(
+            value,
+            string_chars=string_chars,
+            list_items=list_items,
+            dict_items=dict_items,
+        )
+        if isinstance(compacted, dict):
+            compacted["prior_result_truncated"] = True
+        else:
+            compacted = {
+                "prior_result_truncated": True,
+                "result": compacted,
+            }
+        if len(_json_bytes(compacted)) <= _MAX_PRIOR_TOOL_RESULT_BYTES:
+            return compacted
+
+    raw = _json_bytes(value).decode("utf-8", errors="replace")
+    preview = raw[:800]
+    fallback = {"prior_result_truncated": True, "json_preview": preview}
+    while len(_json_bytes(fallback)) > _MAX_PRIOR_TOOL_RESULT_BYTES:
+        preview = preview[: max(1, len(preview) // 2)]
+        fallback["json_preview"] = preview
+    return fallback
+
+
+def _finalization_due(usage: RunUsage) -> bool:
+    return (
+        usage.input_tokens >= _FINALIZE_INPUT_TOKENS
+        or usage.requests >= _FINALIZE_REQUESTS
+        or usage.tool_calls >= _FINALIZE_TOOL_CALLS
+    )
+
+
+def _process_history(
+    context: RunContext[Any], history: list[messages.ModelMessage]
+) -> list[messages.ModelMessage]:
+    """Project old tool payloads and add one native final-output warning."""
+
+    tool_returns = [
+        (message_index, part_index)
+        for message_index, message in enumerate(history)
+        if isinstance(message, messages.ModelRequest)
+        for part_index, part in enumerate(message.parts)
+        if isinstance(part, messages.ToolReturnPart)
+        and part.tool_name in _COMPACTABLE_TOOL_NAMES
+    ]
+    prior_returns = set(tool_returns[:-1])
+    processed: list[messages.ModelMessage] = []
+    for message_index, message in enumerate(history):
+        if not isinstance(message, messages.ModelRequest):
+            processed.append(message)
+            continue
+        parts = [
+            dataclasses.replace(
+                part, content=_bounded_history_tool_result(part.content)
+            )
+            if (message_index, part_index) in prior_returns
+            else part
+            for part_index, part in enumerate(message.parts)
+        ]
+        processed.append(dataclasses.replace(message, parts=parts))
+
+    if _finalization_due(context.usage):
+        already_warned = any(
+            isinstance(part, messages.UserPromptPart)
+            and isinstance(part.content, str)
+            and _FINALIZE_MARKER in part.content
+            for message in processed
+            if isinstance(message, messages.ModelRequest)
+            for part in message.parts
+        )
+        if not already_warned:
+            last = processed[-1]
+            if not isinstance(last, messages.ModelRequest):
+                raise RuntimeError(
+                    "processed PydanticAI history must end in a model request"
+                )
+            processed[-1] = dataclasses.replace(
+                last, parts=[*last.parts, messages.UserPromptPart(_FINALIZE_PROMPT)]
+            )
+    return processed
+
+
+def _prepare_research_tools(
+    context: RunContext[Any], tool_definitions: list[ToolDefinition]
+) -> list[ToolDefinition]:
+    """Leave only the output tool available once the final-output reserve starts."""
+
+    return [] if _finalization_due(context.usage) else tool_definitions
 
 
 def _required_environment(name: str) -> str:
@@ -247,6 +453,10 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
                 description=TOOL_DESCRIPTIONS["submit_companies"],
                 strict=True,
             ),
+            capabilities=[
+                ProcessHistory(_process_history),
+                PrepareTools(_prepare_research_tools),
+            ],
             model_settings=model_settings,
             tool_timeout=tool_timeout,
         )

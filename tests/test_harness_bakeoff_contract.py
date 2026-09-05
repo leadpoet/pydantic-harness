@@ -11,7 +11,12 @@ from unittest.mock import patch
 import harness
 from pydantic import ValidationError
 
-from experiments.harness_bakeoff.models import CompanyResult, validate_companies
+from experiments.harness_bakeoff.models import (
+    CompanyResult,
+    company_list_json_schema,
+    normalize_icp,
+    validate_companies,
+)
 from experiments.harness_bakeoff.prompt import build_prompt
 from experiments.harness_bakeoff import worker
 from experiments.harness_bakeoff.worker import MODULES
@@ -97,12 +102,197 @@ class HarnessContractTests(unittest.TestCase):
 
         self.assertTrue(prompt.startswith("Evaluation date: 2026-09-04\n"))
 
+    def test_current_multi_intent_shape_preserves_primary_and_bonus_metadata(self) -> None:
+        raw = {
+            "icp_id": "today",
+            "employee_count": ["51-200", "201-500"],
+            "intent_signal": "Raised a growth round",
+            "intent_category": "funding",
+            "intent_max_age_days": 365,
+            "intent_signals": [
+                "Raised a growth round",
+                "Announced a strategic partnership",
+            ],
+            "bonus_intents": [
+                {
+                    "intent_signal": "Announced a strategic partnership",
+                    "intent_category": "partnership",
+                    "intent_max_age_days": 180,
+                }
+            ],
+        }
+
+        normalized = normalize_icp(raw)
+
+        self.assertEqual(
+            normalized["intent_contract"],
+            [
+                {
+                    "index": 0,
+                    "signal": "Raised a growth round",
+                    "category": "FUNDING",
+                    "max_age_days": 365,
+                    "required": True,
+                },
+                {
+                    "index": 1,
+                    "signal": "Announced a strategic partnership",
+                    "category": "PARTNERSHIP",
+                    "max_age_days": 180,
+                    "required": False,
+                },
+            ],
+        )
+        self.assertEqual(
+            normalized["required_intents"],
+            [
+                {
+                    "signal": "Raised a growth round",
+                    "category": "FUNDING",
+                    "max_age_days": 365,
+                }
+            ],
+        )
+        self.assertEqual(normalized["intent_category"], "FUNDING")
+        self.assertEqual(normalized["intent_max_age_days"], 365)
+        self.assertEqual(normalize_icp(normalized), normalized)
+
+    def test_explicit_required_intents_do_not_promote_bonus(self) -> None:
+        normalized = normalize_icp(
+            {
+                "icp_id": "today",
+                "employee_count": "51-200|201-500",
+                "required_intents": [
+                    {
+                        "signal": "Raised capital",
+                        "category": "funding",
+                        "max_age_days": 90,
+                    }
+                ],
+                "bonus_intents": [
+                    {
+                        "signal": "Opened an office",
+                        "category": "market_expansion",
+                        "max_age_days": 180,
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(
+            normalized["intent_signals"], ["Raised capital", "Opened an office"]
+        )
+        self.assertTrue(normalized["intent_contract"][0]["required"])
+        self.assertFalse(normalized["intent_contract"][1]["required"])
+        self.assertEqual(normalized["intent_contract"][1]["index"], 1)
+
+    def test_prompt_prioritizes_primary_and_requires_event_grounding(self) -> None:
+        prompt = build_prompt(
+            {
+                "icp_id": "today",
+                "industry": "Software",
+                "employee_count": ["51-200"],
+                "company_stage": "Series A",
+                "country": "United States",
+                "product_service": "A workflow platform",
+                "intent_signal": "Raised funding",
+                "intent_category": "FUNDING",
+                "intent_max_age_days": 365,
+                "intent_signals": ["Raised funding", "Opened an office"],
+                "bonus_intents": [
+                    {"signal": "Opened an office", "category": "MARKET_EXPANSION"}
+                ],
+            }
+        )
+
+        self.assertIn("Index 0 is the host's required primary intent", prompt)
+        self.assertIn("bonus evidence must never replace it", prompt)
+        self.assertIn("begin with one focused search_web news or jobs query", prompt)
+        self.assertIn("Quote the fetched page, not a search-result snippet", prompt)
+        self.assertIn("never substitute a crawl, page-update, or search index date", prompt)
+        self.assertIn("connect the dated event to the ICP product_service", prompt)
+
+    def test_output_schema_guides_stage_without_narrowing_host_contract(self) -> None:
+        schema = company_list_json_schema()["items"]
+
+        self.assertNotIn("company_stage", schema["required"])
+        self.assertNotIn("enum", schema["properties"]["company_stage"])
+        self.assertIn(
+            "Series C+",
+            schema["properties"]["company_stage"]["description"],
+        )
+
+    def test_output_canonicalizes_true_stage_and_employee_format_synonyms(self) -> None:
+        base = {
+            "company_name": "Example",
+            "company_website": "https://example.com",
+            "industry": "Software",
+            "employee_count": "1,001–5,000 employees",
+            "company_stage": "PE-backed",
+            "country": "United States",
+            "fit_summary": "Matches the example ICP.",
+            "fit_evidence_urls": ["https://example.com/about"],
+            "intent_signals": [
+                {
+                    "matched_icp_signal": 0,
+                    "description": "Example raised capital.",
+                    "date": "2026-08-20",
+                    "why_now": "The capital supports growth.",
+                    "url": "https://example.com/news/event",
+                    "snippet": "Example announced the transaction.",
+                }
+            ],
+        }
+
+        dumped = CompanyResult.model_validate(base).model_dump(mode="json")
+
+        self.assertEqual(dumped["employee_count"], "1,001-5,000")
+        self.assertEqual(dumped["company_stage"], "Private Equity")
+        self.assertEqual(
+            CompanyResult.model_validate(
+                {**base, "company_stage": "bootstrapped"}
+            ).company_stage,
+            "Bootstrapped",
+        )
+        self.assertEqual(
+            CompanyResult.model_validate_json(json.dumps(dumped)).model_dump(mode="json"),
+            dumped,
+        )
+
+    def test_output_does_not_relabel_ambiguous_stage_or_employee_range(self) -> None:
+        base = {
+            "company_name": "Example",
+            "company_website": "https://example.com",
+            "industry": "Software",
+            "employee_count": "51-500",
+            "company_stage": "growth stage",
+            "country": "United States",
+            "fit_summary": "Matches the example ICP.",
+            "fit_evidence_urls": ["https://example.com/about"],
+            "intent_signals": [
+                {
+                    "matched_icp_signal": 0,
+                    "description": "Example raised capital.",
+                    "date": "2026-08-20",
+                    "why_now": "The capital supports growth.",
+                    "url": "https://example.com/news/event",
+                    "snippet": "Example announced the transaction.",
+                }
+            ],
+        }
+
+        dumped = CompanyResult.model_validate(base).model_dump(mode="json")
+
+        self.assertEqual(dumped["employee_count"], "51-500")
+        self.assertEqual(dumped["company_stage"], "growth stage")
+
     def test_output_rejects_non_public_and_invalid_port_urls(self) -> None:
         base = {
             "company_name": "Example",
             "company_website": "https://example.com",
             "industry": "Software",
             "employee_count": "51-200",
+            "company_stage": "Series A",
             "country": "United States",
             "fit_summary": "Matches the example ICP.",
             "fit_evidence_urls": ["https://example.com/about"],
@@ -132,6 +322,7 @@ class HarnessContractTests(unittest.TestCase):
             "company_website": "https://example.com",
             "industry": "Software",
             "employee_count": "51-200",
+            "company_stage": "Series A",
             "country": "United States",
             "fit_summary": "Matches the example ICP.",
             "fit_evidence_urls": ["https://example.com/about"],
