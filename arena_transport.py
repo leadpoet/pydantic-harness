@@ -692,7 +692,7 @@ class ArenaToolClient:
                 {
                     "urls": [url],
                     "text": {"maxCharacters": max_chars},
-                    "livecrawl": "preferred",
+                    "maxAgeHours": 0,
                 },
             )
         )
@@ -702,11 +702,24 @@ class ArenaToolClient:
             if isinstance(results, list)
             else None
         )
+        statuses = data.get("statuses")
+        observations = [result] + (statuses if isinstance(statuses, list) else [])
+        if any(
+            isinstance(item, dict)
+            and (item.get("error") or str(item.get("status") or "").lower() == "error")
+            for item in observations
+        ):
+            raise RuntimeError("Exa contents reported an error")
         if result is None:
             raise RuntimeError("Exa contents returned no result")
-        result_url = _evidence_url(result.get("url") or result.get("id")) or url
+        result_url = _evidence_url(result.get("url") or result.get("id"))
+        if not result_url:
+            raise RuntimeError("Exa contents returned no valid evidence URL")
         title = str(result.get("title") or "")[:500]
-        text = str(result.get("text") or "")[:max_chars]
+        raw_text = result.get("text")
+        text = raw_text.strip()[:max_chars] if isinstance(raw_text, str) else ""
+        if len(text) < 300:
+            raise RuntimeError("Exa contents returned fewer than 300 text characters")
         return {
             "url": result_url,
             "status_code": 200,

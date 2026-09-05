@@ -53,8 +53,10 @@ def build_prompt(icp: dict[str, Any], max_companies: int | None = None) -> str:
         "or stage evidence. Do not call get_company_events or run an intent search for a domain until "
         "that qualification gate passes. Research only the REQUIRED intent categories. For each qualified "
         "domain, try get_company_events OR search_web first and use the other only when the first has no "
-        "usable evidence. Fetch only the best evidence URL, with one alternate after a failed or unsupported "
-        "page. Never repeat an equivalent query, domain lookup, or URL. Submit as soon as enough companies "
+        "usable evidence. Fetch only the best evidence URL. If its live fetch fails or returns no usable "
+        "text, try one bounded alternate; if that also fails, omit the intent and company. Never convert a "
+        "provider failure into verified evidence. Never repeat an equivalent query, domain lookup, or URL. "
+        "Submit as soon as enough companies "
         "pass or the remaining budget cannot improve the result. Company homepages may support identity or "
         "fit, but cannot alone prove a dated intent event. Submit ordinary JSON matching the declared company schema."
     )

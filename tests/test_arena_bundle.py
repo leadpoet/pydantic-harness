@@ -18,6 +18,7 @@ from harness import run_icp
 
 def test_arena_transport_uses_credential_free_approved_routes() -> None:
     requests: list[httpx.Request] = []
+    evidence_text = ("Verified event evidence. " * 15).strip()
 
     def handle(request: httpx.Request) -> httpx.Response:
         requests.append(request)
@@ -65,7 +66,7 @@ def test_arena_transport_uses_credential_free_approved_routes() -> None:
                                 {
                                     "url": "https://example.com/news/event",
                                     "title": "Example launch",
-                                    "text": "Verified event evidence",
+                                    "text": evidence_text,
                                 }
                             ]
                         }
@@ -92,7 +93,7 @@ def test_arena_transport_uses_credential_free_approved_routes() -> None:
     assert discovered["companies"][0]["domain"] == "example.com"
     assert profile["company"]["domain"] == "example.com"
     assert page["title"] == "Example launch"
-    assert page["text"] == "Verified event evidence"
+    assert page["text"] == evidence_text
     assert [request.url.path for request in requests] == [
         "/api/v2/integrations/hunter_discover/execute",
         "/api/v2/integrations/free_simple_company_search/execute",
@@ -106,6 +107,135 @@ def test_arena_transport_uses_credential_free_approved_routes() -> None:
     ]
     assert not any("authorization" in request.headers for request in requests)
     assert not any("api_key" in request.url.params for request in requests)
+
+
+def test_fetch_page_requests_fresh_content_and_preserves_successful_url() -> None:
+    requests: list[httpx.Request] = []
+    evidence_text = "x" * 300
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "result": {
+                    "data": {
+                        "results": [
+                            {
+                                "url": "https://news.example.com/final?id=7#details",
+                                "title": "Verified launch",
+                                "text": evidence_text,
+                            }
+                        ]
+                    }
+                }
+            },
+        )
+
+    tools = ArenaToolClient(
+        client=httpx.Client(transport=httpx.MockTransport(handle))
+    )
+
+    page = tools.fetch_page({"url": "https://example.com/original", "max_chars": 1000})
+
+    assert page == {
+        "url": "https://news.example.com/final?id=7",
+        "status_code": 200,
+        "title": "Verified launch",
+        "text": evidence_text,
+        "source": "Exa",
+    }
+    assert json.loads(requests[0].content)["payload"] == {
+        "urls": ["https://example.com/original"],
+        "text": {"maxCharacters": 1000},
+        "maxAgeHours": 0,
+    }
+
+
+@pytest.mark.parametrize("text", ["", "x" * 299, None, {"not_text": "x" * 400}])
+def test_fetch_page_rejects_empty_or_thin_text(text) -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "result": {
+                    "data": {
+                        "results": [
+                            {
+                                "url": "https://example.com/news/event",
+                                "text": text,
+                            }
+                        ]
+                    }
+                }
+            },
+        )
+
+    tools = ArenaToolClient(
+        client=httpx.Client(transport=httpx.MockTransport(handle))
+    )
+
+    with pytest.raises(RuntimeError, match="fewer than 300 text characters"):
+        tools.fetch_page({"url": "https://example.com/news/event"})
+
+
+def test_fetch_page_surfaces_nested_exa_status_error() -> None:
+    target = "https://example.com/news/missing"
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "result": {
+                    "data": {
+                        "results": [],
+                        "statuses": [
+                            {
+                                "id": target,
+                                "status": "error",
+                                "error": {
+                                    "tag": "CRAWL_NOT_FOUND",
+                                    "httpStatusCode": 404,
+                                },
+                            }
+                        ],
+                    }
+                }
+            },
+        )
+
+    tools = ArenaToolClient(
+        client=httpx.Client(transport=httpx.MockTransport(handle))
+    )
+
+    with pytest.raises(RuntimeError, match="reported an error"):
+        tools.fetch_page({"url": target})
+
+
+@pytest.mark.parametrize(
+    "result, message",
+    [
+        (None, "no result"),
+        ({"text": "x" * 300}, "no valid evidence URL"),
+        ({"url": "/relative", "text": "x" * 300}, "no valid evidence URL"),
+        ({"url": "https://example.com/event", "text": "x" * 300,
+          "error": {"httpStatusCode": 404}}, "reported an error"),
+    ],
+)
+def test_fetch_page_rejects_unusable_result(result, message) -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, request=request,
+            json={"results": [] if result is None else [result]},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        tools = ArenaToolClient(client=client)
+        with pytest.raises(RuntimeError, match=message):
+            tools.fetch_page({"url": "https://example.com/event"})
 
 
 def test_exa_projection_keeps_evidence_fields_and_caps_query(

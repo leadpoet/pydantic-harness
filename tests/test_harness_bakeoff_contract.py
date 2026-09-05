@@ -122,6 +122,8 @@ class HarnessContractTests(unittest.TestCase):
             prompt,
         )
         self.assertIn("Write each why_now as one plain, non-technical sentence", prompt)
+        self.assertIn("If its live fetch fails or returns no usable text", prompt)
+        self.assertIn("Never convert a provider failure into verified evidence", prompt)
 
     def test_output_rejects_non_public_and_invalid_port_urls(self) -> None:
         base = {
