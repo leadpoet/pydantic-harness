@@ -97,6 +97,32 @@ class HarnessContractTests(unittest.TestCase):
 
         self.assertTrue(prompt.startswith("Evaluation date: 2026-09-04\n"))
 
+    def test_prompt_qualifies_stage_and_geography_before_intent(self) -> None:
+        prompt = build_prompt(
+            {
+                "icp_id": "today",
+                "geography": "United States",
+                "company_stage": "Series A",
+                "intent_signal": "recent funding",
+            },
+            max_companies=2,
+        )
+
+        self.assertIn("- Geography: United States", prompt)
+        self.assertIn("- Company stage: Series A", prompt)
+        qualification = (
+            "Before intent research, reject any candidate whose required geography "
+            "or company stage is not verified."
+        )
+        intent_call = "Do not call get_company_events or run an intent search"
+        self.assertIn(qualification, prompt)
+        self.assertLess(prompt.index(qualification), prompt.index(intent_call))
+        self.assertIn(
+            "Every submitted evidence URL must be an exact public URL returned by a tool",
+            prompt,
+        )
+        self.assertIn("Write each why_now as one plain, non-technical sentence", prompt)
+
     def test_output_rejects_non_public_and_invalid_port_urls(self) -> None:
         base = {
             "company_name": "Example",

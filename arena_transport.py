@@ -638,57 +638,37 @@ class ArenaToolClient:
             suffix += " (jobs OR careers OR hiring)"
         query = query[: max(0, 500 - len(suffix))].rstrip() + suffix
         limit = max(1, min(int(arguments.get("limit") or 5), 5))
-        endpoint = {
-            "search": "google",
-            "news": "google_news",
-            "jobs": "google_jobs",
-        }[mode]
-        payload = self._json_request(
-            "GET",
-            f"http://api.scrapingdog.com/{endpoint}",
-            params={"query": query},
-        )
-        result_key = {
-            "search": "organic_results",
-            "news": "news_results",
-            "jobs": "jobs_results",
-        }[mode]
-        raw_rows = payload.get(result_key, [])
+        request: dict[str, Any] = {
+            "query": query,
+            "numResults": limit,
+            "type": "auto",
+            "contents": {"highlights": True, "livecrawl": "preferred"},
+        }
+        if mode == "news":
+            request["category"] = "news"
+        data = _result_data(self._deepline("exa_search", request))
+        raw_rows = data.get("results", [])
         rows: list[dict[str, Any]] = []
         seen_urls: set[str] = set()
         for raw in raw_rows if isinstance(raw_rows, list) else []:
             if not isinstance(raw, dict):
                 continue
             row: dict[str, Any] = {}
-            for key in (
-                "title",
-                "snippet",
-                "source",
-                "company_name",
-                "location",
-                "via",
-            ):
-                if raw.get(key) not in (None, "", [], {}):
-                    row[key] = _json_safe(raw[key])
-            observed = raw.get("date") or raw.get("lastUpdated")
+            highlights = raw.get("highlights")
+            snippet = " ".join(
+                str(item).strip()
+                for item in (highlights if isinstance(highlights, list) else [])
+                if str(item).strip()
+            )
+            if raw.get("title") not in (None, ""):
+                row["title"] = _json_safe(raw["title"])
+            if snippet:
+                row["snippet"] = snippet[:1_000]
+            observed = raw.get("publishedDate")
             if observed:
                 row["date"] = _json_safe(observed)
-            extensions = raw.get("extensions")
-            if isinstance(extensions, list):
-                row["details"] = _json_safe(extensions[:6])
-            apply_url = ""
-            apply_links = raw.get("apply_links")
-            if isinstance(apply_links, list):
-                for candidate in apply_links:
-                    if not isinstance(candidate, dict):
-                        continue
-                    apply_url = _evidence_url(
-                        candidate.get("link") or candidate.get("url")
-                    )
-                    if apply_url:
-                        row["apply_url"] = apply_url
-                        break
-            url = _evidence_url(raw.get("url") or raw.get("link")) or apply_url
+            row["source"] = "Exa"
+            url = _evidence_url(raw.get("url") or raw.get("id"))
             if not url:
                 continue
             if url in seen_urls:
@@ -706,20 +686,33 @@ class ArenaToolClient:
         if parsed.scheme != "https" or not parsed.hostname:
             raise ValueError("an absolute HTTPS URL is required")
         max_chars = max(1_000, min(int(arguments.get("max_chars") or 2_500), 4_000))
-        response = self._client.get(
-            "http://api.scrapingdog.com/scrape",
-            params={"url": url, "dynamic": "false"},
-            timeout=self.timeout,
+        data = _result_data(
+            self._deepline(
+                "exa_contents",
+                {
+                    "urls": [url],
+                    "text": {"maxCharacters": max_chars},
+                    "livecrawl": "preferred",
+                },
+            )
         )
-        if not response.is_success:
-            raise RuntimeError(f"Arena page fetch returned HTTP {response.status_code}")
-        title, text = _page_content(response.text, max_chars)
+        results = data.get("results")
+        result = (
+            next((item for item in results if isinstance(item, dict)), None)
+            if isinstance(results, list)
+            else None
+        )
+        if result is None:
+            raise RuntimeError("Exa contents returned no result")
+        result_url = _evidence_url(result.get("url") or result.get("id")) or url
+        title = str(result.get("title") or "")[:500]
+        text = str(result.get("text") or "")[:max_chars]
         return {
-            "url": url,
-            "status_code": response.status_code,
+            "url": result_url,
+            "status_code": 200,
             "title": title,
             "text": text,
-            "source": "ScrapingDog",
+            "source": "Exa",
         }
 
     def call(self, name: str, arguments: dict[str, Any]) -> Any:

@@ -48,22 +48,29 @@ def test_arena_transport_uses_credential_free_approved_routes() -> None:
             return httpx.Response(
                 200, request=request, json={"result": {"data": {"data": []}}}
             )
-        if request.url.path == "/google":
-            return httpx.Response(200, request=request, json={"organic_results": []})
-        if request.url.path == "/google_news":
-            return httpx.Response(200, request=request, json={"news_results": []})
-        if request.url.path == "/google_jobs":
-            return httpx.Response(200, request=request, json={"jobs_results": []})
-        if request.url.path == "/scrape":
+        if request.url.path.endswith("/exa_search/execute"):
             return httpx.Response(
                 200,
                 request=request,
-                text=(
-                    "<html><head><title>Example launch</title>"
-                    "<style>.secret { display: none; }</style>"
-                    "<script>window.secret = 'not evidence';</script></head>"
-                    "<body>Verified event evidence</body></html>"
-                ),
+                json={"result": {"data": {"results": []}}},
+            )
+        if request.url.path.endswith("/exa_contents/execute"):
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "result": {
+                        "data": {
+                            "results": [
+                                {
+                                    "url": "https://example.com/news/event",
+                                    "title": "Example launch",
+                                    "text": "Verified event evidence",
+                                }
+                            ]
+                        }
+                    }
+                },
             )
         raise AssertionError(f"unexpected route: {request.url}")
 
@@ -92,54 +99,51 @@ def test_arena_transport_uses_credential_free_approved_routes() -> None:
         "/api/v2/integrations/predictleads_company_job_openings/execute",
         "/api/v2/integrations/predictleads_company_financing_events/execute",
         "/api/v2/integrations/predictleads_company_news_events/execute",
-        "/google",
-        "/google_news",
-        "/google_jobs",
-        "/scrape",
+        "/api/v2/integrations/exa_search/execute",
+        "/api/v2/integrations/exa_search/execute",
+        "/api/v2/integrations/exa_search/execute",
+        "/api/v2/integrations/exa_contents/execute",
     ]
     assert not any("authorization" in request.headers for request in requests)
     assert not any("api_key" in request.url.params for request in requests)
 
 
-def test_scrapingdog_projection_keeps_evidence_fields_and_caps_query(
+def test_exa_projection_keeps_evidence_fields_and_caps_query(
     monkeypatch,
 ) -> None:
     requests: list[httpx.Request] = []
 
     def handle(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        if request.url.path == "/google_news":
+        if request.url.path.endswith("/exa_search/execute"):
+            request_body = json.loads(request.content)
+            query = request_body["payload"]["query"]
+            if "jobs OR careers OR hiring" in query:
+                return httpx.Response(
+                    200,
+                    request=request,
+                    json={
+                        "results": [
+                            {
+                                "title": "Cloud engineer",
+                                "url": "https://jobs.example.com/apply?id=7#form",
+                            }
+                        ]
+                    },
+                )
             return httpx.Response(
                 200,
                 request=request,
                 json={
-                    "news_results": [
+                    "results": [
                         {"title": "No evidence URL"},
-                        {"title": "Relative URL", "link": "/news/item"},
+                        {"title": "Relative URL", "url": "/news/item"},
                         {
                             "title": "Verified launch",
-                            "link": "https://example.com/news/launch#details",
-                            "extensions": ["2 days ago", "Example newsroom"],
+                            "url": "https://example.com/news/launch#details",
+                            "publishedDate": "2026-09-01T00:00:00.000Z",
+                            "highlights": ["2 days ago", "Example newsroom"],
                         },
-                    ]
-                },
-            )
-        if request.url.path == "/google_jobs":
-            return httpx.Response(
-                200,
-                request=request,
-                json={
-                    "jobs_results": [
-                        {
-                            "title": "Cloud engineer",
-                            "apply_links": [
-                                {"link": "javascript:void(0)"},
-                                {
-                                    "url": "https://jobs.example.com/apply?id=7#form"
-                                },
-                            ],
-                        },
-                        {"title": "Missing application link"},
                     ]
                 },
             )
@@ -164,7 +168,9 @@ def test_scrapingdog_projection_keeps_evidence_fields_and_caps_query(
         "results": [
             {
                 "title": "Verified launch",
-                "details": ["2 days ago", "Example newsroom"],
+                "date": "2026-09-01T00:00:00.000Z",
+                "snippet": "2 days ago Example newsroom",
+                "source": "Exa",
                 "url": "https://example.com/news/launch",
             }
         ],
@@ -175,17 +181,17 @@ def test_scrapingdog_projection_keeps_evidence_fields_and_caps_query(
         "results": [
             {
                 "title": "Cloud engineer",
-                "apply_url": "https://jobs.example.com/apply?id=7",
+                "source": "Exa",
                 "url": "https://jobs.example.com/apply?id=7",
             }
         ],
         "count": 1,
         "mode": "jobs",
     }
-    news_query = requests[0].url.params["query"]
+    news_query = json.loads(requests[0].content)["payload"]["query"]
     assert len(news_query) == 500
     assert news_query.endswith(" after:2026-08-05")
-    assert requests[1].url.params["query"].endswith(
+    assert json.loads(requests[1].content)["payload"]["query"].endswith(
         " (jobs OR careers OR hiring)"
     )
 
