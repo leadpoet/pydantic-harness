@@ -66,8 +66,11 @@ def build_prompt(icp: dict[str, Any], max_companies: int | None = None) -> str:
         else ""
     )
     hiring_guidance = (
-        "- Hiring: job responsibilities must directly match the requested function. Shared words "
-        "such as systems or platform, generic hiring, or an adjacent function are insufficient.\n"
+        "- Hiring: require a source quote of actual job responsibilities that directly matches "
+        "the function named in the required intent text, not merely a broader required_attribute. "
+        "Generic sales, renewal, or adoption targets alone do not prove platform, integration, or "
+        "RevOps ownership. Shared words such as systems or platform, generic hiring, or an adjacent "
+        "function are insufficient.\n"
         if primary.get("category") == "HIRING"
         else ""
     )

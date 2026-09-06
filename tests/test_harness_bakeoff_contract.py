@@ -444,24 +444,33 @@ class HarnessContractTests(unittest.TestCase):
             "intent_signal": "Hiring for integration roles",
             "intent_category": "HIRING",
             "intent_max_age_days": 365,
+            "required_attribute": "Supports customer adoption programs",
         }
         prompt = build_prompt(icp)
 
         self.assertIn(
-            "job responsibilities must directly match the requested function",
+            "source quote of actual job responsibilities",
+            prompt,
+        )
+        self.assertIn(
+            "function named in the required intent text",
+            prompt,
+        )
+        self.assertIn(
+            "not merely a broader required_attribute",
+            prompt,
+        )
+        self.assertIn(
+            "Generic sales, renewal, or adoption targets alone do not prove platform, integration, or RevOps ownership",
             prompt,
         )
         self.assertIn(
             "Shared words such as systems or platform",
             prompt,
         )
-        self.assertIn(
-            "generic hiring, or an adjacent function are insufficient",
-            prompt,
-        )
         icp["intent_category"] = "FUNDING"
         self.assertNotIn(
-            "job responsibilities must directly match the requested function",
+            "function named in the required intent text",
             build_prompt(icp),
         )
 
