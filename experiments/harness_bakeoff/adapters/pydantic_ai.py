@@ -18,7 +18,11 @@ from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.usage import RunUsage, UsageLimits
 
-from experiments.harness_bakeoff.models import CompaniesResult, validate_companies
+from experiments.harness_bakeoff.models import (
+    CompaniesResult,
+    _canonical_company_stage,
+    validate_companies,
+)
 from experiments.harness_bakeoff.prompt import SYSTEM_PROMPT, build_prompt
 from experiments.harness_bakeoff.tool_client import ToolClient
 from experiments.harness_bakeoff.tool_contract import (
@@ -53,6 +57,37 @@ _FINALIZE_PROMPT = (
     "collected. Preserve exact evidence dates, URLs, and quotes. Omit any company that is "
     "not fully verified; do not invent missing facts."
 )
+_KNOWN_COMPANY_STAGES = frozenset(
+    {
+        "Seed",
+        "Bootstrapped",
+        "Series A",
+        "Series B",
+        "Series C+",
+        "Private Equity",
+        "Public",
+    }
+)
+
+
+def _filter_explicit_stage_conflicts(
+    icp: dict[str, Any], companies: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Drop only returned canonical stages that contradict a canonical ICP stage."""
+
+    requested = _canonical_company_stage(icp.get("company_stage"))
+    if not isinstance(requested, str) or requested not in _KNOWN_COMPANY_STAGES:
+        return companies
+
+    return [
+        company
+        for company in companies
+        if not (
+            (returned := _canonical_company_stage(company.get("company_stage")))
+            in _KNOWN_COMPANY_STAGES
+            and returned != requested
+        )
+    ]
 
 
 def _json_bytes(value: Any) -> bytes:
@@ -502,6 +537,7 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
         companies = validate_companies(
             result.output.model_dump(mode="json"), max_companies
         )
+        companies = _filter_explicit_stage_conflicts(icp, companies)
         budget.call("submit_companies", {"companies": companies})
         return companies
     finally:
