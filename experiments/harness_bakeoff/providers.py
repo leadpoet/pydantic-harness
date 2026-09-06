@@ -25,7 +25,12 @@ import httpx
 import trafilatura
 
 from .models import validate_companies
-from .tool_contract import validate_job_categories
+from .linkedin_profile import (
+    exa_reported_error,
+    linkedin_company_profile_url,
+    project_linkedin_profile_evidence,
+)
+from .tool_contract import validate_job_category
 
 
 _URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
@@ -826,16 +831,56 @@ class LiveProviderTools:
         if not isinstance(company, dict):
             company = {}
         _project_employee_count(company, company.get("employee_count"))
-        return {
+        errors = list(financing["errors"])
+        profile: dict[str, Any] = {
             "domain": domain,
             "company": company,
             "latest_financing_events": financing["events"],
-            "errors": financing["errors"],
+            "errors": errors,
         }
+        stored_linkedin_url = company.get("linkedin_url")
+        if stored_linkedin_url not in (None, ""):
+            try:
+                linkedin_url = linkedin_company_profile_url(stored_linkedin_url)
+                if linkedin_url is None:
+                    raise ValueError("stored LinkedIn profile URL is invalid")
+                exa_payload = self._deepline(
+                    "exa_contents",
+                    {
+                        "urls": [linkedin_url],
+                        "text": {"maxCharacters": 4_000},
+                        "maxAgeHours": 0,
+                    },
+                    fallback_cost=0.002,
+                )
+                if exa_reported_error(exa_payload):
+                    raise RuntimeError("Exa contents reported an error")
+                exa_data = _result_data(exa_payload)
+                results = exa_data.get("results")
+                result = (
+                    next((item for item in results if isinstance(item, dict)), None)
+                    if isinstance(results, list)
+                    else None
+                )
+                profile["linkedin_profile_evidence"] = (
+                    project_linkedin_profile_evidence(linkedin_url, result)
+                )
+            except ValueError as exc:
+                errors.append(
+                    {"source": "linkedin_profile_evidence", "error": str(exc)[:160]}
+                )
+            except Exception as exc:
+                errors.append(
+                    {
+                        "source": "linkedin_profile_evidence",
+                        "error": f"profile fetch failed: {type(exc).__name__}",
+                    }
+                )
+        return profile
 
     def get_company_events(self, arguments: dict[str, Any]) -> dict[str, Any]:
         domain = _host_from_domain(str(arguments.get("domain") or ""))
-        job_categories = validate_job_categories(arguments.get("job_categories"))
+        job_category = validate_job_category(arguments.get("job_category"))
         categories = arguments.get("categories") or ["NEWS", "HIRING", "FUNDING"]
         if not isinstance(categories, list):
             categories = [categories]
@@ -859,8 +904,8 @@ class LiveProviderTools:
             payload = {"company_id_or_domain": domain, "page": 1, "limit": limit}
             if tool == "predictleads_company_job_openings":
                 payload.update({"active_only": True, "not_closed": True})
-                if job_categories:
-                    payload["categories"] = job_categories
+                if job_category:
+                    payload["categories"] = [job_category]
             elif tool == "predictleads_company_news_events":
                 news_categories: list[str] = []
                 for category in categories:

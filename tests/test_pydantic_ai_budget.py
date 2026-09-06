@@ -145,6 +145,12 @@ def test_prior_company_profile_keeps_fit_and_latest_financing_evidence() -> None
                 },
             }
         ],
+        "linkedin_profile_evidence": {
+            "url": "https://www.linkedin.com/company/example",
+            "title": "Example | LinkedIn",
+            "employee_count": "201-500",
+            "quote": "Company size\n201-500 employees",
+        },
         "errors": [],
     }
     history = [
@@ -201,6 +207,10 @@ def test_prior_company_profile_keeps_fit_and_latest_financing_evidence() -> None
     assert latest["related"]["article"]["url"] == (
         "https://example.com/news/series-b"
     )
+    linkedin = compact_profile["linkedin_profile_evidence"]
+    assert linkedin["url"] == "https://www.linkedin.com/company/example"
+    assert linkedin["employee_count"] == "201-500"
+    assert linkedin["quote"] == "Company size\n201-500 employees"
 
 
 def test_prior_fetch_page_keeps_full_quote_and_url() -> None:

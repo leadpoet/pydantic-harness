@@ -225,6 +225,7 @@ class ProviderFreshnessTests(unittest.TestCase):
             ["Series B", "Series A"],
         )
         self.assertEqual(profile["company"]["employee_count"], "11-50")
+        self.assertNotIn("linkedin_profile_evidence", profile)
         self.assertEqual(profile["errors"], [])
         self.assertEqual(deepline.call_count, 2)
         self.assertEqual(
@@ -241,6 +242,153 @@ class ProviderFreshnessTests(unittest.TestCase):
         self.assertEqual(
             deepline.call_args_list[1].kwargs["fallback_cost"],
             0.004,
+        )
+
+    def test_standalone_profile_adds_separate_linkedin_size_evidence(self) -> None:
+        tools = self._tools()
+        source_row = {
+            "domain": "example.com",
+            "company_name": "Example",
+            "linkedin_url": "linkedin.com/company/example",
+            "employee_count": 89,
+        }
+
+        def execute(tool, payload, **kwargs):
+            if tool == "free_simple_company_search":
+                return {"data": {"rows": [source_row]}}
+            if tool == "predictleads_company_financing_events":
+                return {"data": {"data": []}}
+            self.assertEqual(tool, "exa_contents")
+            self.assertEqual(
+                payload,
+                {
+                    "urls": ["https://linkedin.com/company/example"],
+                    "text": {"maxCharacters": 4_000},
+                    "maxAgeHours": 0,
+                },
+            )
+            self.assertEqual(kwargs["fallback_cost"], 0.002)
+            return {
+                "data": {
+                    "results": [
+                        {
+                            "url": "https://linkedin.com/company/example/",
+                            "title": "Another display name | LinkedIn",
+                            "text": (
+                                "## About\nCompany size 51-200 employees\n"
+                                "94 associated members\n## Updates"
+                            ),
+                        }
+                    ]
+                }
+            }
+
+        with patch.object(tools, "_deepline", side_effect=execute) as deepline:
+            profile = tools.get_company_profile({"domain": "example.com"})
+
+        self.assertEqual(deepline.call_count, 3)
+        self.assertEqual(profile["company"]["employee_count_estimate"], 89)
+        self.assertEqual(
+            profile["company"]["linkedin_url"], "linkedin.com/company/example"
+        )
+        self.assertNotIn("employee_count", profile["company"])
+        self.assertEqual(
+            profile["linkedin_profile_evidence"],
+            {
+                "url": "https://linkedin.com/company/example/",
+                "title": "Another display name | LinkedIn",
+                "employee_count": "51-200",
+                "quote": "Company size 51-200 employees",
+            },
+        )
+        self.assertEqual(profile["errors"], [])
+        self.assertEqual(source_row["employee_count"], 89)
+
+    def test_standalone_profile_retains_data_when_linkedin_fetch_fails(self) -> None:
+        tools = self._tools()
+
+        def execute(tool, _payload, **_kwargs):
+            if tool == "free_simple_company_search":
+                return {
+                    "data": {
+                        "rows": [
+                            {
+                                "domain": "example.com",
+                                "company_name": "Example",
+                                "linkedin_url": (
+                                    "https://www.linkedin.com/company/example"
+                                ),
+                            }
+                        ]
+                    }
+                }
+            if tool == "predictleads_company_financing_events":
+                return {
+                    "data": {
+                        "data": [
+                            {
+                                "type": "financing_event",
+                                "attributes": {"financing_type": "Series A"},
+                            }
+                        ]
+                    }
+                }
+            raise RuntimeError("provider unavailable")
+
+        with patch.object(tools, "_deepline", side_effect=execute) as deepline:
+            profile = tools.get_company_profile({"domain": "example.com"})
+
+        self.assertEqual(deepline.call_count, 3)
+        self.assertEqual(profile["company"]["company_name"], "Example")
+        self.assertEqual(
+            profile["latest_financing_events"][0]["data"]["items"][0][
+                "attributes"
+            ]["financing_type"],
+            "Series A",
+        )
+        self.assertNotIn("linkedin_profile_evidence", profile)
+        self.assertEqual(
+            profile["errors"],
+            [
+                {
+                    "source": "linkedin_profile_evidence",
+                    "error": "profile fetch failed: RuntimeError",
+                }
+            ],
+        )
+
+    def test_standalone_profile_rejects_invalid_linkedin_without_fetch(self) -> None:
+        tools = self._tools()
+
+        def execute(tool, _payload, **_kwargs):
+            if tool == "free_simple_company_search":
+                return {
+                    "data": {
+                        "rows": [
+                            {
+                                "domain": "example.com",
+                                "company_name": "Example",
+                                "linkedin_url": "https://linkedin.com/in/example",
+                            }
+                        ]
+                    }
+                }
+            self.assertEqual(tool, "predictleads_company_financing_events")
+            return {"data": {"data": []}}
+
+        with patch.object(tools, "_deepline", side_effect=execute) as deepline:
+            profile = tools.get_company_profile({"domain": "example.com"})
+
+        self.assertEqual(deepline.call_count, 2)
+        self.assertNotIn("linkedin_profile_evidence", profile)
+        self.assertEqual(
+            profile["errors"],
+            [
+                {
+                    "source": "linkedin_profile_evidence",
+                    "error": "stored LinkedIn profile URL is invalid",
+                }
+            ],
         )
 
     def test_standalone_profile_labels_numeric_count_and_ignores_boolean(self) -> None:
@@ -350,7 +498,7 @@ class ProviderFreshnessTests(unittest.TestCase):
                 {
                     "domain": "example.com",
                     "categories": ["HIRING"],
-                    "job_categories": ["operations", "sales"],
+                    "job_category": "operations",
                 }
             )
 
@@ -364,7 +512,7 @@ class ProviderFreshnessTests(unittest.TestCase):
                     "limit": 5,
                     "active_only": True,
                     "not_closed": True,
-                    "categories": ["operations", "sales"],
+                    "categories": ["operations"],
                 },
             ),
         )
@@ -390,15 +538,15 @@ class ProviderFreshnessTests(unittest.TestCase):
             )
         self.assertNotIn("categories", deepline.call_args.args[1])
 
-        for malformed in ("sales", ["not_a_provider_category"], ["sales"] * 21):
+        for malformed in (["sales"], "not_a_provider_category", 42):
             with self.subTest(malformed=malformed):
                 with patch.object(tools, "_deepline") as deepline:
-                    with self.assertRaisesRegex(ValueError, "job_categories"):
+                    with self.assertRaisesRegex(ValueError, "job_category"):
                         tools.get_company_events(
                             {
                                 "domain": "example.com",
                                 "categories": ["HIRING"],
-                                "job_categories": malformed,
+                                "job_category": malformed,
                             }
                         )
                     deepline.assert_not_called()

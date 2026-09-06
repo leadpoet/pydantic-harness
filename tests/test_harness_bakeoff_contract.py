@@ -33,7 +33,7 @@ class HarnessContractTests(unittest.TestCase):
 
         self.assertNotIn("query", schema["properties"])
         self.assertEqual(
-            schema["properties"]["job_categories"]["items"]["enum"],
+            schema["properties"]["job_category"]["enum"],
             list(PREDICTLEADS_JOB_CATEGORIES),
         )
         self.assertFalse(schema["additionalProperties"])

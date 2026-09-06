@@ -154,6 +154,7 @@ def _bounded_history_tool_result(value: Any) -> Any:
         (80, 3, 18),
         (60, 2, 14),
         (60, 1, 10),
+        (50, 1, 10),
     ):
         compacted = _compact_tool_value(
             value,
@@ -383,17 +384,17 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
     def get_company_events(
         domain: str,
         categories: list[str] = [],
-        job_categories: list[str] = [],
+        job_category: str = "",
         limit: int = 5,
     ) -> Any:
-        """Find events, optionally filtering jobs by coarse provider categories."""
+        """Find events, optionally filtering jobs by one coarse provider category."""
 
         return budget.call(
             "get_company_events",
             {
                 "domain": domain,
                 "categories": categories,
-                "job_categories": job_categories,
+                "job_category": job_category,
                 "limit": limit,
             },
         )
