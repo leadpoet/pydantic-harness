@@ -186,6 +186,8 @@ def test_extracts_live_inline_company_size_format() -> None:
     [
         "Across Massachusetts",
         "Headquarters\nType\nPrivately Held",
+        "Headquarters\nType Privately Held",
+        "Headquarters\nCompany size 11-50 employees",
         "Headquarters " + ("A" * 301),
         "Headquarters Across\tMassachusetts",
         "## Updates\nHeadquarters After Updates",

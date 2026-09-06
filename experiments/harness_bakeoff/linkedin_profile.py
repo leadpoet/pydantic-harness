@@ -165,10 +165,16 @@ def _headquarters_from_about(text: Any) -> tuple[str, str] | None:
     if match is None:
         return None
     value = match.group("value").strip()
+    normalized_value = value.casefold()
     if (
         not value
         or len(value) > _MAX_HEADQUARTERS_CHARS
-        or value.casefold() in _ABOUT_FIELD_LABELS
+        or any(
+            normalized_value == label
+            or normalized_value.startswith(label + " ")
+            or normalized_value.startswith(label + ":")
+            for label in _ABOUT_FIELD_LABELS
+        )
         or any(ord(character) < 32 or ord(character) == 127 for character in value)
     ):
         return None
