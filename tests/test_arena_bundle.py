@@ -319,6 +319,140 @@ def test_company_profile_includes_bounded_latest_financing_context() -> None:
     }
 
 
+@pytest.mark.parametrize("status_code", [429, 502])
+def test_company_profile_keeps_financing_when_profile_lookup_fails(
+    status_code: int,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/free_simple_company_search/execute"):
+            return httpx.Response(
+                status_code,
+                request=request,
+                json={"error": {"message": "secret-provider-detail"}},
+            )
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "result": {
+                    "data": {
+                        "data": [
+                            {
+                                "type": "financing_event",
+                                "attributes": {"financing_type": "Series A"},
+                            }
+                        ]
+                    }
+                }
+            },
+        )
+
+    profile = ArenaToolClient(
+        client=httpx.Client(transport=httpx.MockTransport(handle))
+    ).get_company_profile({"domain": "example.com"})
+
+    assert len(requests) == 2
+    assert profile["company"] == {}
+    assert profile["latest_financing_events"][0]["data"]["items"][0][
+        "attributes"
+    ]["financing_type"] == "Series A"
+    assert profile["errors"] == [
+        {
+            "source": "free_simple_company_search",
+            "error": f"profile lookup failed: HTTP {status_code}",
+        }
+    ]
+    assert "secret-provider-detail" not in json.dumps(profile)
+
+
+@pytest.mark.parametrize(
+    "lookup_payload",
+    [
+        {"result": {"error": "provider failure", "data": {"rows": []}}},
+        {"result": {"data": {"rows": "not-a-list"}}},
+        {"result": {"data": {"rows": [{"domain": "example.com"}, "bad"]}}},
+    ],
+)
+def test_company_profile_rejects_malformed_lookup_but_keeps_financing(
+    lookup_payload: dict[str, object],
+) -> None:
+    calls = 0
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        payload = lookup_payload if calls == 1 else {"result": {"data": {"data": []}}}
+        return httpx.Response(200, request=request, json=payload)
+
+    profile = ArenaToolClient(
+        client=httpx.Client(transport=httpx.MockTransport(handle))
+    ).get_company_profile({"domain": "example.com"})
+
+    assert calls == 2
+    assert profile["company"] == {}
+    assert profile["latest_financing_events"][0]["data"]["items"] == []
+    assert profile["errors"] == [
+        {
+            "source": "free_simple_company_search",
+            "error": "profile lookup failed: ValueError",
+        }
+    ]
+
+
+def test_company_profile_bounds_errors_when_both_sources_fail() -> None:
+    calls = 0
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            502,
+            request=request,
+            json={"error": {"message": "secret-provider-detail"}},
+        )
+
+    profile = ArenaToolClient(
+        client=httpx.Client(transport=httpx.MockTransport(handle))
+    ).get_company_profile({"domain": "example.com"})
+
+    assert calls == 2
+    assert profile["company"] == {}
+    assert profile["latest_financing_events"] == []
+    assert profile["errors"] == [
+        {
+            "source": "free_simple_company_search",
+            "error": "profile lookup failed: HTTP 502",
+        },
+        {
+            "source": "predictleads_company_financing_events",
+            "error": "RuntimeError",
+        },
+    ]
+    assert "secret-provider-detail" not in json.dumps(profile)
+
+
+@pytest.mark.parametrize("error_code", ["budget_refused", "budget_exhausted"])
+def test_company_profile_preserves_arena_budget_rejection(error_code: str) -> None:
+    calls = 0
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            402,
+            request=request,
+            json={"error": {"code": error_code}},
+        )
+
+    tools = ArenaToolClient(client=httpx.Client(transport=httpx.MockTransport(handle)))
+    with pytest.raises(RuntimeError, match=error_code):
+        tools.get_company_profile({"domain": "example.com"})
+    assert calls == 1
+
+
 def test_company_profile_adds_separate_current_linkedin_size_evidence() -> None:
     requests: list[httpx.Request] = []
     source_row = {

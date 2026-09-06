@@ -244,6 +244,116 @@ class ProviderFreshnessTests(unittest.TestCase):
             0.004,
         )
 
+    def test_standalone_profile_keeps_financing_when_lookup_fails(self) -> None:
+        for status_code in (429, 502):
+            with self.subTest(status_code=status_code):
+                tools = self._tools()
+
+                def execute(tool, _payload, **_kwargs):
+                    if tool == "free_simple_company_search":
+                        raise RuntimeError(
+                            f"HTTP {status_code} token=secret-provider-detail"
+                        )
+                    self.assertEqual(tool, "predictleads_company_financing_events")
+                    return {
+                        "data": {
+                            "data": [
+                                {
+                                    "type": "financing_event",
+                                    "attributes": {"financing_type": "Series A"},
+                                }
+                            ]
+                        }
+                    }
+
+                with patch.object(tools, "_deepline", side_effect=execute) as deepline:
+                    profile = tools.get_company_profile({"domain": "example.com"})
+
+                self.assertEqual(deepline.call_count, 2)
+                self.assertEqual(profile["company"], {})
+                self.assertEqual(
+                    profile["latest_financing_events"][0]["data"]["items"][0][
+                        "attributes"
+                    ]["financing_type"],
+                    "Series A",
+                )
+                self.assertEqual(
+                    profile["errors"],
+                    [
+                        {
+                            "source": "free_simple_company_search",
+                            "error": f"profile lookup failed: HTTP {status_code}",
+                        }
+                    ],
+                )
+                self.assertNotIn("secret-provider-detail", json.dumps(profile))
+
+    def test_standalone_profile_rejects_malformed_lookup(self) -> None:
+        malformed_payloads = (
+            {"result": {"error": "provider failure", "data": {"rows": []}}},
+            {"data": {"rows": "not-a-list"}},
+            {"data": {"rows": [{"domain": "example.com"}, "bad"]}},
+        )
+        for malformed_payload in malformed_payloads:
+            with self.subTest(payload=malformed_payload):
+                tools = self._tools()
+                responses = [malformed_payload, {"data": {"data": []}}]
+                with patch.object(tools, "_deepline", side_effect=responses) as deepline:
+                    profile = tools.get_company_profile({"domain": "example.com"})
+
+                self.assertEqual(deepline.call_count, 2)
+                self.assertEqual(profile["company"], {})
+                self.assertEqual(profile["errors"], [
+                    {
+                        "source": "free_simple_company_search",
+                        "error": "profile lookup failed: ValueError",
+                    }
+                ])
+
+    def test_standalone_profile_bounds_errors_when_both_sources_fail(self) -> None:
+        tools = self._tools()
+
+        with patch.object(
+            tools,
+            "_deepline",
+            side_effect=[
+                RuntimeError("HTTP 502 token=secret-provider-detail"),
+                RuntimeError("financing failure token=secret-provider-detail"),
+            ],
+        ) as deepline:
+            profile = tools.get_company_profile({"domain": "example.com"})
+
+        self.assertEqual(deepline.call_count, 2)
+        self.assertEqual(profile["company"], {})
+        self.assertEqual(profile["latest_financing_events"], [])
+        self.assertEqual(
+            profile["errors"],
+            [
+                {
+                    "source": "free_simple_company_search",
+                    "error": "profile lookup failed: HTTP 502",
+                },
+                {
+                    "source": "predictleads_company_financing_events",
+                    "error": "RuntimeError: financing failure token=[redacted]",
+                },
+            ],
+        )
+        self.assertNotIn("secret-provider-detail", json.dumps(profile))
+
+    def test_standalone_profile_preserves_provider_run_limits(self) -> None:
+        for error in (
+            TimeoutError("attempt deadline exhausted"),
+            RuntimeError("provider call limit exhausted"),
+            RuntimeError("provider cost limit exhausted"),
+        ):
+            with self.subTest(error=error):
+                tools = self._tools()
+                with patch.object(tools, "_deepline", side_effect=error) as deepline:
+                    with self.assertRaises(type(error)):
+                        tools.get_company_profile({"domain": "example.com"})
+                self.assertEqual(deepline.call_count, 1)
+
     def test_standalone_profile_adds_separate_linkedin_size_evidence(self) -> None:
         tools = self._tools()
         source_row = {

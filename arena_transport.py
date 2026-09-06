@@ -243,6 +243,46 @@ def _result_data(payload: Any) -> dict[str, Any]:
     return data if isinstance(data, dict) else payload
 
 
+def _profile_lookup_company(payload: Any, domain: str) -> dict[str, Any]:
+    """Return one stored profile row, rejecting provider failure envelopes."""
+
+    if exa_reported_error(payload):
+        raise ValueError("company profile provider reported an error")
+    data = _result_data(payload)
+    rows = data.get("rows")
+    if rows is None and isinstance(data.get("data"), dict):
+        rows = data["data"].get("rows")
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ValueError("company profile rows are malformed")
+    exact = next(
+        (
+            row
+            for row in rows
+            if _domain(row.get("primary_domain") or row.get("domain")) == domain
+        ),
+        rows[0] if rows else {},
+    )
+    return dict(exact)
+
+
+def _profile_lookup_error(exc: BaseException) -> dict[str, str]:
+    """Project a bounded profile-source error without provider response text."""
+
+    status = re.search(r"\bHTTP ([1-5][0-9]{2})\b", str(exc))
+    reason = f"HTTP {status.group(1)}" if status else type(exc).__name__
+    return {
+        "source": "free_simple_company_search",
+        "error": f"profile lookup failed: {reason}",
+    }
+
+
+def _raise_profile_run_limit(exc: BaseException) -> None:
+    """Keep Arena quota refusal behavior unchanged."""
+
+    if str(exc) in {"budget_exhausted", "budget_refused"}:
+        raise exc
+
+
 def _exa_reported_error(payload: Any, *, depth: int = 0) -> bool:
     """Detect failed Exa replies even when Deepline returns HTTP 200."""
 
@@ -582,26 +622,19 @@ class ArenaToolClient:
             f"SELECT {columns} FROM companies WHERE normalized_domain = "
             f"{_sql_literal(domain)} LIMIT 3"
         )
-        payload = self._deepline("free_simple_company_search", {"sql": sql})
-        data = _result_data(payload)
-        rows = data.get("rows") or (data.get("data") or {}).get("rows") or []
-        if not isinstance(rows, list):
-            rows = []
-        exact = next(
-            (
-                row
-                for row in rows
-                if isinstance(row, dict)
-                and _domain(row.get("primary_domain") or row.get("domain")) == domain
-            ),
-            rows[0] if rows else {},
-        )
+        errors: list[dict[str, str]] = []
+        try:
+            payload = self._deepline("free_simple_company_search", {"sql": sql})
+            company = _profile_lookup_company(payload, domain)
+        except Exception as exc:
+            _raise_profile_run_limit(exc)
+            company = {}
+            errors.append(_profile_lookup_error(exc))
         financing = self.get_company_events(
             {"domain": domain, "categories": ["FUNDING"], "limit": 3}
         )
-        company = dict(exact) if isinstance(exact, dict) else {}
         _project_employee_count(company, company.get("employee_count"))
-        errors = list(financing["errors"])
+        errors.extend(financing["errors"])
         profile: dict[str, Any] = {
             "domain": domain,
             "company": company,

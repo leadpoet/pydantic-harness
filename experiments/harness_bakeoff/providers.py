@@ -220,6 +220,49 @@ def _result_data(payload: Any) -> dict[str, Any]:
     return data if isinstance(data, dict) else payload
 
 
+def _profile_lookup_company(payload: Any, domain: str) -> dict[str, Any]:
+    """Return one stored profile row, rejecting provider failure envelopes."""
+
+    if exa_reported_error(payload):
+        raise ValueError("company profile provider reported an error")
+    data = _result_data(payload)
+    rows = data.get("rows")
+    if rows is None and isinstance(data.get("data"), dict):
+        rows = data["data"].get("rows")
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ValueError("company profile rows are malformed")
+    exact = next(
+        (
+            row
+            for row in rows
+            if _maybe_host(row.get("primary_domain") or row.get("domain")) == domain
+        ),
+        rows[0] if rows else {},
+    )
+    return _json_safe(exact)
+
+
+def _profile_lookup_error(exc: BaseException) -> dict[str, str]:
+    """Project a bounded profile-source error without provider response text."""
+
+    status = re.search(r"\bHTTP ([1-5][0-9]{2})\b", str(exc))
+    reason = f"HTTP {status.group(1)}" if status else type(exc).__name__
+    return {
+        "source": "free_simple_company_search",
+        "error": f"profile lookup failed: {reason}",
+    }
+
+
+def _raise_profile_run_limit(exc: BaseException) -> None:
+    """Keep the standalone run's existing provider limits fail-closed."""
+
+    if isinstance(exc, TimeoutError) or str(exc) in {
+        "provider call limit exhausted",
+        "provider cost limit exhausted",
+    }:
+        raise exc
+
+
 def _job_description_excerpt(value: Any) -> str | None:
     """Return bounded plain text from an untrusted provider description."""
 
@@ -803,35 +846,25 @@ class LiveProviderTools:
     def get_company_profile(self, arguments: dict[str, Any]) -> dict[str, Any]:
         domain = _host_from_domain(str(arguments.get("domain") or ""))
         columns = "normalized_domain, domain, company_name, industry, location, linkedin_url, employee_count, year_founded, updated_at"
-        raw = self._deepline(
-            "free_simple_company_search",
-            {
-                "sql": f"SELECT {columns} FROM companies WHERE normalized_domain = {_sql_literal(domain)} LIMIT 3"
-            },
-            fallback_cost=0.0,
-        )
-        data = _result_data(raw)
-        rows = data.get("rows") or (data.get("data") or {}).get("rows") or []
-        if not isinstance(rows, list):
-            rows = []
-        exact = next(
-            (
-                row
-                for row in rows
-                if isinstance(row, dict)
-                and _maybe_host(row.get("primary_domain") or row.get("domain"))
-                == domain
-            ),
-            rows[0] if rows else {},
-        )
+        errors: list[dict[str, str]] = []
+        try:
+            raw = self._deepline(
+                "free_simple_company_search",
+                {
+                    "sql": f"SELECT {columns} FROM companies WHERE normalized_domain = {_sql_literal(domain)} LIMIT 3"
+                },
+                fallback_cost=0.0,
+            )
+            company = _profile_lookup_company(raw, domain)
+        except Exception as exc:
+            _raise_profile_run_limit(exc)
+            company = {}
+            errors.append(_profile_lookup_error(exc))
         financing = self.get_company_events(
             {"domain": domain, "categories": ["FUNDING"], "limit": 3}
         )
-        company = _json_safe(exact)
-        if not isinstance(company, dict):
-            company = {}
         _project_employee_count(company, company.get("employee_count"))
-        errors = list(financing["errors"])
+        errors.extend(financing["errors"])
         profile: dict[str, Any] = {
             "domain": domain,
             "company": company,
