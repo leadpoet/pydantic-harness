@@ -408,8 +408,12 @@ class HarnessContractTests(unittest.TestCase):
         self.assertIn("capacity in an existing market is insufficient", prompt)
         self.assertIn("Verify each country separately", prompt)
         self.assertIn("unless the source explicitly connects it", prompt)
+        self.assertIn("investor market alone is financing, not commercial market entry", prompt)
+        self.assertIn("unless the ICP explicitly requests financing-market access", prompt)
+        self.assertIn("financial-services company entering a new customer market", prompt)
         icp["intent_category"] = "FUNDING"
         self.assertNotIn("Verify each country separately", build_prompt(icp))
+        self.assertNotIn("investor market alone", build_prompt(icp))
         icp["intent_category"] = "FACILITY_OPENING"
         self.assertNotIn("another facility, asset, or capacity increase", build_prompt(icp))
 
@@ -449,6 +453,8 @@ class HarnessContractTests(unittest.TestCase):
         self.assertIn("capital raised by the target company itself", prompt)
         self.assertIn("LP commitments, assets under management", prompt)
         self.assertIn("unless the ICP explicitly requests those events", prompt)
+        self.assertIn("Corporate debt or equity financing can qualify", prompt)
+        self.assertIn("when the ICP does not restrict the financing type", prompt)
         icp["intent_category"] = "HIRING"
         self.assertNotIn("capital raised by the target company itself", build_prompt(icp))
 

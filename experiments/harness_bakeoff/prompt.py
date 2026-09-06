@@ -90,14 +90,19 @@ def build_prompt(icp: dict[str, Any], max_companies: int | None = None) -> str:
         "- Market expansion: require source proof of completed entry into a new geography, customer "
         "market, or distinct commercial segment. A non-binding MoU, plan, or added facility, asset, "
         "or capacity in an existing market is insufficient unless the source explicitly connects it "
-        "to that new-market entry. Verify each country separately; do not combine actual and planned entry.\n"
+        "to that new-market entry. Raising capital in a new country, issuing bonds, or accessing a new "
+        "investor market alone is financing, not commercial market entry, unless the ICP explicitly "
+        "requests financing-market access. A financial-services company entering a new customer market "
+        "can qualify with direct evidence of that commercial entry. Verify each country separately; "
+        "do not combine actual and planned entry.\n"
         if primary.get("category") == "MARKET_EXPANSION"
         else ""
     )
     funding_guidance = (
         "- Funding: verify capital raised by the target company itself. An investment fund close, "
         "LP commitments, assets under management, or loans the company makes to customers are not "
-        "a company funding round unless the ICP explicitly requests those events.\n"
+        "a company funding round unless the ICP explicitly requests those events. Corporate debt or "
+        "equity financing can qualify when the ICP does not restrict the financing type.\n"
         if primary.get("category") == "FUNDING"
         else ""
     )
