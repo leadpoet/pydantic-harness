@@ -89,6 +89,8 @@ def build_prompt(icp: dict[str, Any], max_companies: int | None = None) -> str:
         "Treat a stored profile's LinkedIn URL as an unverified candidate, not a canonical fact. "
         "Use current page evidence for the canonical company URL; if it cannot be verified, leave "
         "the optional company_linkedin field empty. "
+        "Do not present a database headcount estimate or bucket boundary as a verified exact staff "
+        "total; report only the supported employee band. "
         "Never choose an employee band just because it appears in the ICP. "
         "For each qualified domain, try get_company_events or one focused search_web query for the "
         "primary intent and use the other only when the first has no usable evidence. Fetch the best "

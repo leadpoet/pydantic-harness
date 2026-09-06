@@ -272,6 +272,11 @@ class HarnessContractTests(unittest.TestCase):
             "if it cannot be verified, leave the optional company_linkedin field empty",
             prompt,
         )
+        self.assertIn(
+            "Do not present a database headcount estimate or bucket boundary as a verified exact staff total",
+            prompt,
+        )
+        self.assertIn("report only the supported employee band", prompt)
 
     def test_output_schema_guides_stage_without_narrowing_host_contract(self) -> None:
         schema = company_list_json_schema()["items"]
