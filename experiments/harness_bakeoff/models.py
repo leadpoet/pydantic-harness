@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 from copy import deepcopy
 from datetime import date as ISODate
 from typing import Any, Optional
@@ -27,6 +28,13 @@ _EMPLOYEE_BANDS = (
     "1,001-5,000",
     "5,001-10,000",
     "10,001+",
+)
+
+_PUBLIC_LISTING_STAGE = re.compile(
+    r"^(?:public|public company|publicly traded|listed company)\s*"
+    r"\(\s*(?:asx|nasdaq|nyse|lse|tsx|tsxv|hkex|sgx|jpx|tse|krx|"
+    r"euronext|six|jse|nse|bse)\s*:\s*[a-z0-9][a-z0-9.\-]{0,19}\s*\)$",
+    re.IGNORECASE,
 )
 
 
@@ -89,6 +97,8 @@ def _canonical_company_stage(value: Any) -> Any:
     }:
         return "Private Equity"
     if compact in {"public", "public company", "publicly traded", "listed company"}:
+        return "Public"
+    if _PUBLIC_LISTING_STAGE.fullmatch(text):
         return "Public"
     return value
 

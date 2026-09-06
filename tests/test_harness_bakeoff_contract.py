@@ -207,10 +207,53 @@ class HarnessContractTests(unittest.TestCase):
 
         self.assertIn("Index 0 is the host's required primary intent", prompt)
         self.assertIn("bonus evidence must never replace it", prompt)
-        self.assertIn("begin with one focused search_web news or jobs query", prompt)
+        self.assertIn("Keep fit discovery separate from event verification", prompt)
+        self.assertIn(
+            "begin with one focused search_web news or jobs query",
+            prompt,
+        )
+        self.assertIn("at most two search_companies calls", prompt)
+        self.assertIn("loosen exactly one discovery filter", prompt)
+        self.assertIn("never loosen final fit", prompt)
+        self.assertIn("three total candidate-finding", prompt)
+        self.assertIn("before verifying an available plausible candidate", prompt)
+        self.assertIn("profile its domain and fetch_page", prompt)
+        self.assertIn("Series C, Series D, or a later venture round", prompt)
         self.assertIn("Quote the fetched page, not a search-result snippet", prompt)
         self.assertIn("never substitute a crawl, page-update, or search index date", prompt)
-        self.assertIn("connect the dated event to the ICP product_service", prompt)
+        self.assertIn("state the verified event", prompt)
+        self.assertIn("commercial implication clearly as a possibility", prompt)
+        self.assertIn("Separate inference from sourced fact", prompt)
+
+    def test_prompt_preserves_event_status_and_avoids_sales_fabrication(self) -> None:
+        prompt = build_prompt(
+            {
+                "icp_id": "today",
+                "industry": "Data and Analytics",
+                "company_stage": "Series C+",
+                "product_service": ["analytics", "workflow", "security"],
+                "intent_signal": "Launched a product or appointed an executive",
+                "intent_category": "PRODUCT_LAUNCH",
+                "intent_max_age_days": 365,
+            }
+        )
+
+        self.assertIn('"company_stage": "Series C+"', prompt)
+        self.assertIn(
+            "beta, preview, pilot, or a future announcement is not general availability",
+            prompt,
+        )
+        self.assertIn(
+            "distinguish announcement from effective or start date",
+            prompt,
+        )
+        self.assertIn("never treat a future start as completed", prompt)
+        self.assertIn("Never copy unrelated offerings", prompt)
+        self.assertIn(
+            "invent procurement, budget, demand, vendor evaluation, or purchase plans",
+            prompt,
+        )
+        self.assertIn("Avoid benchmark, ICP match, scoring, or qualification jargon", prompt)
 
     def test_output_schema_guides_stage_without_narrowing_host_contract(self) -> None:
         schema = company_list_json_schema()["items"]
