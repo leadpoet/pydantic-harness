@@ -775,7 +775,15 @@ class LiveProviderTools:
             ),
             rows[0] if rows else {},
         )
-        return {"domain": domain, "company": _json_safe(exact)}
+        financing = self.get_company_events(
+            {"domain": domain, "categories": ["FUNDING"], "limit": 3}
+        )
+        return {
+            "domain": domain,
+            "company": _json_safe(exact),
+            "latest_financing_events": financing["events"],
+            "errors": financing["errors"],
+        }
 
     def get_company_events(self, arguments: dict[str, Any]) -> dict[str, Any]:
         domain = _host_from_domain(str(arguments.get("domain") or ""))

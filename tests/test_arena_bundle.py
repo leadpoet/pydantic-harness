@@ -97,6 +97,7 @@ def test_arena_transport_uses_credential_free_approved_routes() -> None:
     assert [request.url.path for request in requests] == [
         "/api/v2/integrations/hunter_discover/execute",
         "/api/v2/integrations/free_simple_company_search/execute",
+        "/api/v2/integrations/predictleads_company_financing_events/execute",
         "/api/v2/integrations/predictleads_company_job_openings/execute",
         "/api/v2/integrations/predictleads_company_financing_events/execute",
         "/api/v2/integrations/predictleads_company_news_events/execute",
@@ -108,6 +109,144 @@ def test_arena_transport_uses_credential_free_approved_routes() -> None:
     assert {request.url.host for request in requests} == {"code.deepline.com"}
     assert not any("authorization" in request.headers for request in requests)
     assert not any("api_key" in request.url.params for request in requests)
+
+
+def test_company_profile_includes_bounded_latest_financing_context() -> None:
+    requests: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/free_simple_company_search/execute"):
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "result": {
+                        "data": {
+                            "rows": [
+                                {
+                                    "domain": "example.com",
+                                    "company_name": "Example",
+                                    "employee_count": "11-50",
+                                }
+                            ]
+                        }
+                    }
+                },
+            )
+        if request.url.path.endswith(
+            "/predictleads_company_financing_events/execute"
+        ):
+            events = [
+                {
+                    "type": "financing_event",
+                    "attributes": {
+                        "financing_type": stage,
+                        "found_at": date,
+                    },
+                    "relationships": {
+                        "article": {"data": {"type": "article", "id": str(index)}}
+                    },
+                }
+                for index, (stage, date) in enumerate(
+                    (
+                        ("Series B", "2026-06-23T11:00:00+02:00"),
+                        ("Series A", "2024-10-24T08:36:02+02:00"),
+                        ("Seed", "2023-01-10T09:00:00Z"),
+                        ("Pre-Seed", "2022-01-10T09:00:00Z"),
+                    )
+                )
+            ]
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "result": {
+                        "data": {
+                            "data": events,
+                            "included": [
+                                {
+                                    "type": "article",
+                                    "id": "0",
+                                    "attributes": {
+                                        "title": "Example raises Series B",
+                                        "url": "https://example.com/news/series-b",
+                                        "published_at": "2026-06-23",
+                                    },
+                                }
+                            ],
+                            "meta": {"count": 4},
+                        }
+                    }
+                },
+            )
+        raise AssertionError(f"unexpected route: {request.url}")
+
+    arguments = {"domain": "example.com"}
+    profile = ArenaToolClient(
+        client=httpx.Client(transport=httpx.MockTransport(handle))
+    ).get_company_profile(arguments)
+
+    financing = profile["latest_financing_events"][0]
+    assert [
+        item["attributes"]["financing_type"] for item in financing["data"]["items"]
+    ] == ["Series B", "Series A", "Seed"]
+    assert financing["data"]["items"][0]["related"]["article"] == {
+        "title": "Example raises Series B",
+        "url": "https://example.com/news/series-b",
+        "published_at": "2026-06-23",
+    }
+    assert financing["data"]["returned_count"] == 3
+    assert financing["data"]["available_count"] == 4
+    assert profile["company"]["employee_count"] == "11-50"
+    assert "company_stage" not in profile
+    assert arguments == {"domain": "example.com"}
+    assert profile["errors"] == []
+    assert json.loads(requests[1].content)["payload"] == {
+        "company_id_or_domain": "example.com",
+        "page": 1,
+        "limit": 3,
+    }
+
+
+def test_company_profile_preserves_firmographics_when_financing_fails() -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/free_simple_company_search/execute"):
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "result": {
+                        "data": {
+                            "rows": [
+                                {
+                                    "domain": "example.com",
+                                    "company_name": "Example",
+                                    "employee_count": "11-50",
+                                }
+                            ]
+                        }
+                    }
+                },
+            )
+        return httpx.Response(
+            503,
+            request=request,
+            json={"error": {"code": "provider_unavailable"}},
+        )
+
+    profile = ArenaToolClient(
+        client=httpx.Client(transport=httpx.MockTransport(handle))
+    ).get_company_profile({"domain": "example.com"})
+
+    assert profile["company"]["company_name"] == "Example"
+    assert profile["latest_financing_events"] == []
+    assert profile["errors"] == [
+        {
+            "source": "predictleads_company_financing_events",
+            "error": "RuntimeError",
+        }
+    ]
 
 
 def test_search_companies_normalizes_only_hunter_headcount_filter() -> None:

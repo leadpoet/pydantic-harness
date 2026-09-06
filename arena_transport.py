@@ -546,7 +546,15 @@ class ArenaToolClient:
             ),
             rows[0] if rows else {},
         )
-        return {"domain": domain, "company": exact if isinstance(exact, dict) else {}}
+        financing = self.get_company_events(
+            {"domain": domain, "categories": ["FUNDING"], "limit": 3}
+        )
+        return {
+            "domain": domain,
+            "company": exact if isinstance(exact, dict) else {},
+            "latest_financing_events": financing["events"],
+            "errors": financing["errors"],
+        }
 
     def get_company_events(self, arguments: dict[str, Any]) -> dict[str, Any]:
         domain = _domain(arguments.get("domain"))

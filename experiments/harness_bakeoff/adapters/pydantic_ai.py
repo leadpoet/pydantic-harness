@@ -367,7 +367,7 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
         )
 
     def get_company_profile(domain: str) -> Any:
-        """Get Deepline firmographic data for one company domain."""
+        """Get Deepline firmographics and latest financing for one company domain."""
 
         return budget.call("get_company_profile", {"domain": domain})
 

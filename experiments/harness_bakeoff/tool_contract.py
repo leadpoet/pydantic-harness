@@ -10,7 +10,11 @@ TOOL_DESCRIPTIONS = {
     "search_companies": (
         "Discover candidate companies with Deepline. Use focused queries and ICP filters."
     ),
-    "get_company_profile": "Get Deepline firmographic data for one company domain.",
+    "get_company_profile": (
+        "Get Deepline firmographics plus up to three latest financing events for one "
+        "company domain. Do not repeat a FUNDING event lookup when financing is already "
+        "returned. Empty financing results are not proof that no later funding exists."
+    ),
     "get_company_events": (
         "Find live company events such as jobs or financing for one domain."
     ),
