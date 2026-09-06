@@ -227,6 +227,17 @@ class HarnessContractTests(unittest.TestCase):
         self.assertIn("commercial implication clearly as a possibility", prompt)
         self.assertIn("Separate inference from sourced fact", prompt)
 
+    def test_prompt_prioritizes_untested_hits_over_rejected_domains(self) -> None:
+        prompt = build_prompt({"icp_id": "candidate-priority"})
+
+        self.assertIn("queue of distinct plausible dated hits", prompt)
+        self.assertIn("required stage and primary event", prompt)
+        self.assertIn("strongest untested queued hit", prompt)
+        self.assertIn(
+            "revisit the rejected domain only when new direct evidence resolves",
+            prompt,
+        )
+
     def test_prompt_preserves_event_status_and_avoids_sales_fabrication(self) -> None:
         prompt = build_prompt(
             {
