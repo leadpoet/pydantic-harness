@@ -219,7 +219,9 @@ class HarnessContractTests(unittest.TestCase):
         self.assertIn("before verifying an available plausible candidate", prompt)
         self.assertIn("profile its domain and fetch_page", prompt)
         self.assertIn("Series C, Series D, or a later venture round", prompt)
-        self.assertIn("Quote the fetched page, not a search-result snippet", prompt)
+        self.assertIn("Quote the fetched page's main article", prompt)
+        self.assertIn("not search snippets, navigation, or related-article cards", prompt)
+        self.assertIn("never attach the surrounding page's date to a linked event", prompt)
         self.assertIn("never substitute a crawl, page-update, or search index date", prompt)
         self.assertIn("state the verified event", prompt)
         self.assertIn("commercial implication clearly as a possibility", prompt)
@@ -254,6 +256,9 @@ class HarnessContractTests(unittest.TestCase):
             prompt,
         )
         self.assertIn("Avoid benchmark, ICP match, scoring, or qualification jargon", prompt)
+        self.assertIn("product_service describes what the target company sells", prompt)
+        self.assertIn("not the seller's offering or what the target wants to buy", prompt)
+        self.assertIn("verified event's effect on the target's actual operations or growth", prompt)
 
     def test_output_schema_guides_stage_without_narrowing_host_contract(self) -> None:
         schema = company_list_json_schema()["items"]
@@ -264,6 +269,21 @@ class HarnessContractTests(unittest.TestCase):
             "Series C+",
             schema["properties"]["company_stage"]["description"],
         )
+
+    def test_certification_guidance_requires_a_real_granted_event(self) -> None:
+        icp = {
+            "icp_id": "test-certification",
+            "intent_signal": "Announced a certification milestone",
+            "intent_category": "REGULATORY_CLEARANCE",
+            "intent_max_age_days": 365,
+        }
+        prompt = build_prompt(icp)
+        self.assertIn("actually granted to this company or product and its date", prompt)
+        self.assertIn("do not invent one or require an undisclosed auditor's name", prompt)
+        self.assertIn("A marketplace listing, partner badge", prompt)
+        self.assertIn("check the latest funding or ownership status", prompt)
+        icp["intent_category"] = "FUNDING"
+        self.assertNotIn("A marketplace listing, partner badge", build_prompt(icp))
 
     def test_output_canonicalizes_true_stage_and_employee_format_synonyms(self) -> None:
         base = {

@@ -5,8 +5,8 @@
 ## Purpose
 
 This repository contains one open-source PydanticAI harness for live B2B
-company sourcing. Keep it independent from the production Research Lab and its
-current private sourcing model.
+company sourcing. Keep it independent from competition-host deployment and
+persistence, and scoped to the public competition contract.
 
 ## Simple competition boundary
 

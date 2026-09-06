@@ -21,6 +21,16 @@ def build_prompt(icp: dict[str, Any], max_companies: int | None = None) -> str:
     ).strip()
     required_stage = str(normalized.get("company_stage") or "").strip()
     required_attribute = str(normalized.get("required_attribute") or "").strip()
+    primary = (normalized.get("intent_contract") or [{}])[0]
+    certification_guidance = (
+        "For certification or compliance intent, identify the named clearance, standard, audit, "
+        "or certification actually granted to this company or product and its date. Preserve the "
+        "issuer when stated; do not invent one or require an undisclosed auditor's name. "
+        "A marketplace listing, partner badge, or generic claim of certified or compliant solutions "
+        "does not establish that event.\n"
+        if primary.get("category") == "REGULATORY_CLEARANCE"
+        else ""
+    )
     raw_day = (
         os.environ.get("BAKEOFF_EVALUATION_DATE")
         or os.environ.get("LAB_ARENA_EVALUATION_DATE")
@@ -39,9 +49,11 @@ def build_prompt(icp: dict[str, Any], max_companies: int | None = None) -> str:
         f"- Geography: {required_geography or 'not specified'}\n"
         f"- Company stage: {required_stage or 'not specified'}\n"
         f"- Required attribute: {required_attribute or 'not specified'}\n"
+        f"{certification_guidance}"
         "Verify the ICP industry, geography, employee band, stage, and required attribute; "
         "omit any company with a missing or conflicting required fact. If company_stage is "
-        "required, verify it independently and preserve the verified stage. Normalize only true "
+        "required, check the latest funding or ownership status, not just a historical round matching "
+        "the ICP, and preserve the verified stage. Normalize only true "
         "synonyms of known labels such as Seed, Series A, Series B, Series C+, Private Equity, "
         "Public, or Bootstrapped. Series C+ includes verified Series C and later venture rounds. "
         "Use Private Equity only for verified private-equity ownership and Public only for a "
@@ -71,14 +83,18 @@ def build_prompt(icp: dict[str, Any], max_companies: int | None = None) -> str:
         "primary intent and use the other only when the first has no usable evidence. Fetch the best "
         "evidence URL, "
         "with one alternate after a failed or unsupported page. Never repeat an equivalent query, "
-        "domain lookup, or URL. Quote the fetched page, not a search-result snippet. The signal date "
+        "domain lookup, or URL. Quote the fetched page's main article, not search snippets, navigation, "
+        "or related-article cards. If a related article contains the event, fetch that article and "
+        "use its own URL and date; never attach the surrounding page's date to a linked event. The signal date "
         "must be the actual event or announcement date; never substitute a crawl, page-update, or search "
         "index date. Preserve event status: beta, preview, pilot, or a future announcement is not "
         "general availability. For an appointment, distinguish announcement from effective or start "
         "date; use the date of the claimed event and never treat a future start as completed. Industry, "
         "size, and general activity prove fit, not buying intent. In why_now, state the verified event, "
         "then one commercial implication clearly as a possibility. Separate inference from sourced "
-        "fact and mention only the relevant ICP product_service. Never copy unrelated offerings or "
+        "fact. The ICP product_service describes what the target company sells, not the seller's "
+        "offering or what the target wants to buy. Use it for company fit; tie why_now to the "
+        "verified event's effect on the target's actual operations or growth. Never copy unrelated offerings or "
         "invent procurement, budget, demand, vendor evaluation, or purchase plans. Avoid benchmark, "
         "ICP match, scoring, or qualification jargon. "
         "Vague claims such as 'the company is growing' are insufficient. Submit as soon as enough "

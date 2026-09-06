@@ -43,6 +43,8 @@ _MAX_PRIOR_TOOL_RESULT_BYTES = 1_200
 _FINALIZE_INPUT_TOKENS = 82_000
 _FINALIZE_REQUESTS = 22
 _FINALIZE_TOOL_CALLS = 24
+_ARENA_REQUEST_OUTPUT_TOKENS = 4_096
+_RUN_OUTPUT_TOKENS_LIMIT = 15_000
 _FINALIZE_MARKER = "[research-budget-reserve]"
 _FINALIZE_PROMPT = (
     f"{_FINALIZE_MARKER} Research is complete because the run must reserve capacity "
@@ -235,6 +237,18 @@ def _prepare_research_tools(
     return [] if _finalization_due(context.usage) else tool_definitions
 
 
+def _run_usage_limits() -> UsageLimits:
+    """Keep cumulative run limits separate from the per-request model cap."""
+
+    return UsageLimits(
+        cost_limit=Decimal("4"),
+        request_limit=30,
+        tool_calls_limit=30,
+        input_tokens_limit=120_000,
+        output_tokens_limit=_RUN_OUTPUT_TOKENS_LIMIT,
+    )
+
+
 def _required_environment(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
@@ -398,7 +412,9 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
 
         return budget.call("fetch_page", {"url": url, "max_chars": max_chars})
 
-    max_output_tokens = 4_096 if arena_mode else 15_000
+    max_output_tokens = (
+        _ARENA_REQUEST_OUTPUT_TOKENS if arena_mode else _RUN_OUTPUT_TOKENS_LIMIT
+    )
     model_settings: OpenRouterModelSettings = {
         "max_tokens": max_output_tokens,
         "parallel_tool_calls": False,
@@ -468,13 +484,7 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
         result = await asyncio.wait_for(
             agent.run(
                 build_prompt(icp, max_companies=max_companies),
-                usage_limits=UsageLimits(
-                    cost_limit=Decimal("4"),
-                    request_limit=30,
-                    tool_calls_limit=30,
-                    input_tokens_limit=120_000,
-                    output_tokens_limit=max_output_tokens,
-                ),
+                usage_limits=_run_usage_limits(),
                 usage=run_usage,
             ),
             timeout=run_timeout,

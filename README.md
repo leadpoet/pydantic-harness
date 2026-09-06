@@ -41,11 +41,10 @@ and non-empty. The current input fields are:
   "company_stage": "Series A",
   "product_service": "A business platform used by operating teams",
   "required_attribute": "Sells a business product used by operating teams",
-  "required_intents": [{
-    "signal": "Announced a funding round in the last 12 months",
-    "category": "FUNDING",
-    "max_age_days": 365
-  }],
+  "intent_signals": ["Announced a funding round in the last 12 months"],
+  "intent_signal": "Announced a funding round in the last 12 months",
+  "intent_category": "FUNDING",
+  "intent_max_age_days": 365,
   "bonus_intents": []
 }
 ```
@@ -53,10 +52,16 @@ and non-empty. The current input fields are:
 An agent must accept additional input fields so the host can add descriptive
 ICP data without changing the function signature.
 
-The normal output shape is:
+The current primary intent is at index 0, with its category and freshness in
+`intent_category` and `intent_max_age_days`. Bonus intents are optional and
+never replace the primary intent. Structured `required_intents` are also
+accepted for standalone callers. `product_service` describes the target
+company's own offering; it is a fit criterion, not evidence of buying intent.
+
+The return value is a JSON list, or `[]` when no company can be verified:
 
 ```json
-{
+[{
   "company_name": "Example",
   "company_website": "https://example.com/",
   "company_linkedin": "https://www.linkedin.com/company/example/",
@@ -82,11 +87,14 @@ The normal output shape is:
     "evidence_quote": "Source text that proves the characteristic.",
     "explanation": "Why the evidence satisfies the requirement."
   }
-}
+}]
 ```
 
 The harness can use these tools: `search_companies`, `get_company_profile`,
 `get_company_events`, `search_web`, `fetch_page`, and `submit_companies`.
+In the Arena, reasoning uses OpenRouter and research uses Deepline, including
+Exa search and page contents through Deepline. No separate Exa or ScrapingDog
+key is required for this native path. The standalone tools below remain separate.
 
 ## Miner competition contract
 
@@ -102,7 +110,8 @@ def run_icp(icp: dict) -> list[dict]:
 The host passes one ordinary ICP dictionary and validates the returned list
 against the output fields shown above. It also supplies approved provider API
 access and enforces the same time, call, and cost limits for the baseline and
-all miner submissions. Provider keys are never put in a submission.
+all miner submissions. The CLI sends runtime credentials separately from the
+source archive; the sandbox receives provider access, not raw provider keys.
 
 The source folder can contain normal local modules and a `requirements.txt`.
 It does not need a Dockerfile, command-line adapter, Git commit, source
@@ -146,9 +155,10 @@ The smoke phase runs one live one-company attempt. The scored phase runs each
 selected ICP twice. Each attempt uses a fresh process and the same provider,
 token, time, and cost limits. Results must be written outside the repository.
 
-## One-shot host adapter
+## Optional standalone one-shot adapter
 
-The stateless host adapter prints one `PYDANTIC_HARNESS_RESULT_JSON=` line for
+The native Arena imports `harness.run_icp` directly and does not use
+`production_runner.py`. This optional adapter prints one `PYDANTIC_HARNESS_RESULT_JSON=` line for
 reliable parsing. Run its live preflight once per daily batch. Pass the selected
 model and its public pricing to each run; `run` does not repeat the paid model
 probe.
@@ -163,12 +173,6 @@ python production_runner.py run \
 
 Each `run` call reads one raw ICP JSON object and starts a fresh `run_icp`
 worker process. The adapter does not deploy code or persist state.
-
-## Provisional result
-
-In the earlier internal live test, 6 of 16 returned companies met the full
-sales-ready standard. This result is provisional because some test arms had
-integration failures. No private ICP or result data is included here.
 
 ## License
 

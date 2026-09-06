@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from types import SimpleNamespace
 
 from pydantic_ai import messages
+from pydantic_ai.usage import RunUsage
 
 from experiments.harness_bakeoff.adapters import pydantic_ai
 
@@ -165,4 +167,23 @@ def test_budget_reserve_warns_once_and_hides_only_research_tools() -> None:
     assert (
         pydantic_ai._prepare_research_tools(below_reserve, tool_definitions)
         == tool_definitions
+    )
+
+
+def test_arena_per_request_output_cap_is_not_the_cumulative_run_limit() -> None:
+    limits = pydantic_ai._run_usage_limits()
+
+    assert pydantic_ai._ARENA_REQUEST_OUTPUT_TOKENS == 4_096
+    assert limits.output_tokens_limit == 15_000
+    assert limits.input_tokens_limit == 120_000
+    assert limits.request_limit == 30
+    assert limits.tool_calls_limit == 30
+    assert limits.cost_limit == Decimal("4")
+    limits.check_tokens(
+        RunUsage(
+            input_tokens=89_296,
+            output_tokens=4_384,
+            requests=16,
+            tool_calls=15,
+        )
     )
