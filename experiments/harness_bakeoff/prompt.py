@@ -108,6 +108,7 @@ def build_prompt(icp: dict[str, Any], max_companies: int | None = None) -> str:
         "not current exact staff and cannot prove an employee band. Source a current public employee "
         "band before returning; never choose one just because it appears in the ICP. Report the "
         "supported band, not a bucket boundary or LinkedIn profile count as exact staff. "
+        "In fit_summary, state only the supported employee band; do not include exact staff estimates. "
         "For each qualified domain, try get_company_events or one focused search_web query for the "
         "primary intent and use the other only when the first has no usable evidence. Fetch the best "
         "evidence URL, "

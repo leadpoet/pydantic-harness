@@ -310,6 +310,7 @@ class HarnessContractTests(unittest.TestCase):
             "Report the supported band, not a bucket boundary or LinkedIn profile count as exact staff",
             prompt,
         )
+        self.assertIn("In fit_summary, state only the supported employee band", prompt)
 
     def test_expansion_uses_original_event_and_separates_planned_entry(self) -> None:
         icp = {
