@@ -94,6 +94,115 @@ def test_prior_tool_payload_is_bounded_but_latest_remains_full() -> None:
     assert latest_return.content == original[4].parts[0].content
 
 
+def test_prior_company_profile_keeps_fit_and_latest_financing_evidence() -> None:
+    attributes = {
+        "amount": "10000000",
+        "amount_normalized": "$10M",
+        "article_sentence": "Example raised Series B funding. " + ("context " * 80),
+        "categories": ["funding", "venture_capital"],
+        "category": "venture",
+        "confidence": 0.99,
+        "event": "funding",
+        "financing_type": "Series B",
+        "financing_type_normalized": "series_b",
+        "first_seen_at": "2026-06-23T11:00:00Z",
+        "found_at": "2026-06-23T11:00:00Z",
+        "summary": "Example completed its latest financing. " + ("detail " * 80),
+        "title": "Series B",
+    }
+    event = {
+        "type": "financing_event",
+        "attributes": attributes,
+        "related": {
+            "article": {
+                "title": "Example raises Series B",
+                "url": "https://example.com/news/series-b",
+                "published_at": "2026-06-23",
+                "author": "Reporter",
+            }
+        },
+    }
+    profile = {
+        "domain": "example.com",
+        "company": {
+            "normalized_domain": "example.com",
+            "domain": "example.com",
+            "company_name": "Example",
+            "industry": "Hardware",
+            "location": "Austin, Texas, United States",
+            "linkedin_url": "https://linkedin.com/company/example",
+            "employee_count": "201-500",
+            "year_founded": 2015,
+            "updated_at": "2026-09-01T00:00:00Z",
+        },
+        "latest_financing_events": [
+            {
+                "source": "predictleads_company_financing_events",
+                "data": {
+                    "items": [event, event, event],
+                    "returned_count": 3,
+                    "available_count": 4,
+                },
+            }
+        ],
+        "errors": [],
+    }
+    history = [
+        messages.ModelRequest.user_text_prompt("Verify Example"),
+        messages.ModelResponse(
+            parts=[
+                messages.ToolCallPart(
+                    "get_company_profile",
+                    {"domain": "example.com"},
+                    tool_call_id="profile-1",
+                )
+            ]
+        ),
+        messages.ModelRequest(
+            parts=[
+                messages.ToolReturnPart(
+                    "get_company_profile",
+                    profile,
+                    tool_call_id="profile-1",
+                )
+            ]
+        ),
+        messages.ModelResponse(
+            parts=[
+                messages.ToolCallPart(
+                    "search_web",
+                    {"query": "another company"},
+                    tool_call_id="search-2",
+                )
+            ]
+        ),
+        messages.ModelRequest(
+            parts=[
+                messages.ToolReturnPart(
+                    "search_web",
+                    _large_result("Beta", "b"),
+                    tool_call_id="search-2",
+                )
+            ]
+        ),
+    ]
+
+    processed = pydantic_ai._process_history(_context(), history)
+    compact_profile = processed[2].parts[0].content
+
+    assert len(pydantic_ai._json_bytes(profile)) > 1_200
+    assert len(pydantic_ai._json_bytes(compact_profile)) <= 1_200
+    assert compact_profile["company"] == profile["company"]
+    financing = compact_profile["latest_financing_events"][0]
+    assert financing["source"] == "predictleads_company_financing_events"
+    latest = financing["data"]["items"][0]
+    assert latest["attributes"]["financing_type"] == "Series B"
+    assert latest["attributes"]["found_at"] == "2026-06-23T11:00:00Z"
+    assert latest["related"]["article"]["url"] == (
+        "https://example.com/news/series-b"
+    )
+
+
 def test_prior_fetch_page_keeps_full_quote_and_url() -> None:
     exact_url = "https://example.com/news/verified-launch?source=company"
     exact_quote = "The company launched its verified platform on August 20, 2026."

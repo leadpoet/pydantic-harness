@@ -67,7 +67,16 @@ def _key_priority(key: Any) -> tuple[int, str]:
         return (0, normalized)
     if any(
         token in normalized
-        for token in ("date", "time", "quote", "snippet", "title", "description")
+        for token in (
+            "date",
+            "time",
+            "_at",
+            "financing",
+            "quote",
+            "snippet",
+            "title",
+            "description",
+        )
     ):
         return (1, normalized)
     if any(
@@ -96,7 +105,7 @@ def _compact_tool_value(
     depth: int = 0,
     field_name: str = "",
 ) -> Any:
-    if depth > 7:
+    if depth > 8:
         return "[truncated]"
     if isinstance(value, str):
         if any(
