@@ -474,6 +474,22 @@ class HarnessContractTests(unittest.TestCase):
         icp["company_stage"] = ""
         self.assertNotIn("neutral company-name", build_prompt(icp))
 
+    def test_seed_requirement_does_not_silently_include_pre_seed(self) -> None:
+        icp = {
+            "icp_id": "test-seed-stage",
+            "company_stage": "Seed",
+            "intent_signal": "Announced a funding round",
+            "intent_category": "FUNDING",
+            "intent_max_age_days": 365,
+        }
+        prompt = build_prompt(icp)
+        self.assertIn("Do not relabel pre-seed as Seed", prompt)
+        self.assertIn("unless the ICP explicitly includes pre-seed", prompt)
+        icp["company_stage"] = "Series A"
+        self.assertNotIn("Do not relabel pre-seed", build_prompt(icp))
+        icp["company_stage"] = ""
+        self.assertNotIn("Do not relabel pre-seed", build_prompt(icp))
+
     def test_hiring_guidance_requires_direct_function_match(self) -> None:
         icp = {
             "icp_id": "test-hiring",

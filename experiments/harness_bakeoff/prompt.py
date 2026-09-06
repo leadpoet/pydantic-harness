@@ -55,6 +55,11 @@ def build_prompt(icp: dict[str, Any], max_companies: int | None = None) -> str:
         normalized.get("geography") or normalized.get("country") or ""
     ).strip()
     required_stage = str(normalized.get("company_stage") or "").strip()
+    seed_guidance = (
+        "Do not relabel pre-seed as Seed unless the ICP explicitly includes pre-seed. "
+        if required_stage.casefold() == "seed"
+        else ""
+    )
     stage_confirmation = (
         "Confirm current stage with a neutral company-name latest-funding/ownership lookup, "
         "without the requested stage; check for later rounds/control changes. "
@@ -127,6 +132,7 @@ def build_prompt(icp: dict[str, Any], max_companies: int | None = None) -> str:
         "Series C or later. Private Equity requires current majority/controlling PE ownership, not an "
         "investment; Public requires listed shares. "
         f"{stage_confirmation}"
+        f"{seed_guidance}"
         "Never copy an unproven requested stage.\n"
         "- Employee estimates from discovery/profile are shortlist clues, not bands or current exact staff. "
         "Verify a current public band. If the ICP lists buckets, return one listed bucket after formatting-only "
