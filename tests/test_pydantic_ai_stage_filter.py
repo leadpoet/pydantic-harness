@@ -50,6 +50,22 @@ def test_seed_requirement_drops_conflicting_series_b_output() -> None:
     ) == [companies[0]]
 
 
+def test_c_plus_requirement_drops_public_but_keeps_later_venture_round() -> None:
+    companies = [_company("Alpha", "Public"), _company("Beta", "Series D")]
+
+    assert _filter_explicit_stage_conflicts(
+        {"company_stage": "Series C+"}, companies
+    ) == [companies[1]]
+
+
+def test_unrecognized_requirements_do_not_filter_known_company_stages() -> None:
+    companies = [_company("Alpha", "Public"), _company("Beta", "Seed")]
+    for requirement in (None, "", "Any", "Series B / Series C", ["Series B"]):
+        assert _filter_explicit_stage_conflicts(
+            {"company_stage": requirement}, companies
+        ) == companies
+
+
 def test_matching_synonyms_and_later_rounds_are_eligible() -> None:
     companies = [
         _company("Alpha", "publicly traded"),
