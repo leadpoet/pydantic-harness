@@ -18,6 +18,7 @@ from harness import run_icp
 
 def test_arena_transport_uses_credential_free_approved_routes() -> None:
     requests: list[httpx.Request] = []
+    evidence_text = ("Verified event evidence. " * 15).strip()
 
     def handle(request: httpx.Request) -> httpx.Response:
         requests.append(request)
@@ -48,22 +49,29 @@ def test_arena_transport_uses_credential_free_approved_routes() -> None:
             return httpx.Response(
                 200, request=request, json={"result": {"data": {"data": []}}}
             )
-        if request.url.path == "/google":
-            return httpx.Response(200, request=request, json={"organic_results": []})
-        if request.url.path == "/google_news":
-            return httpx.Response(200, request=request, json={"news_results": []})
-        if request.url.path == "/google_jobs":
-            return httpx.Response(200, request=request, json={"jobs_results": []})
-        if request.url.path == "/scrape":
+        if request.url.path.endswith("/exa_search/execute"):
             return httpx.Response(
                 200,
                 request=request,
-                text=(
-                    "<html><head><title>Example launch</title>"
-                    "<style>.secret { display: none; }</style>"
-                    "<script>window.secret = 'not evidence';</script></head>"
-                    "<body>Verified event evidence</body></html>"
-                ),
+                json={"result": {"data": {"results": []}}},
+            )
+        if request.url.path.endswith("/exa_contents/execute"):
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "result": {
+                        "data": {
+                            "results": [
+                                {
+                                    "url": "https://example.com/news/event",
+                                    "title": "Example launch",
+                                    "text": evidence_text,
+                                }
+                            ]
+                        }
+                    }
+                },
             )
         raise AssertionError(f"unexpected route: {request.url}")
 
@@ -85,61 +93,219 @@ def test_arena_transport_uses_credential_free_approved_routes() -> None:
     assert discovered["companies"][0]["domain"] == "example.com"
     assert profile["company"]["domain"] == "example.com"
     assert page["title"] == "Example launch"
-    assert page["text"] == "Verified event evidence"
+    assert page["text"] == evidence_text
     assert [request.url.path for request in requests] == [
         "/api/v2/integrations/hunter_discover/execute",
         "/api/v2/integrations/free_simple_company_search/execute",
         "/api/v2/integrations/predictleads_company_job_openings/execute",
         "/api/v2/integrations/predictleads_company_financing_events/execute",
         "/api/v2/integrations/predictleads_company_news_events/execute",
-        "/google",
-        "/google_news",
-        "/google_jobs",
-        "/scrape",
+        "/api/v2/integrations/exa_search/execute",
+        "/api/v2/integrations/exa_search/execute",
+        "/api/v2/integrations/exa_search/execute",
+        "/api/v2/integrations/exa_contents/execute",
     ]
+    assert {request.url.host for request in requests} == {"code.deepline.com"}
     assert not any("authorization" in request.headers for request in requests)
     assert not any("api_key" in request.url.params for request in requests)
 
 
-def test_scrapingdog_projection_keeps_evidence_fields_and_caps_query(
+def test_fetch_page_requests_fresh_content_and_preserves_successful_url() -> None:
+    requests: list[httpx.Request] = []
+    evidence_text = "x" * 300
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "result": {
+                    "data": {
+                        "results": [
+                            {
+                                "url": "https://news.example.com/final?id=7#details",
+                                "title": "Verified launch",
+                                "text": evidence_text,
+                            }
+                        ]
+                    }
+                }
+            },
+        )
+
+    tools = ArenaToolClient(
+        client=httpx.Client(transport=httpx.MockTransport(handle))
+    )
+
+    page = tools.fetch_page({"url": "https://example.com/original", "max_chars": 1000})
+
+    assert page == {
+        "url": "https://news.example.com/final?id=7",
+        "status_code": 200,
+        "title": "Verified launch",
+        "text": evidence_text,
+        "source": "Exa",
+    }
+    assert json.loads(requests[0].content)["payload"] == {
+        "urls": ["https://example.com/original"],
+        "text": {"maxCharacters": 1000},
+        "maxAgeHours": 0,
+    }
+
+
+@pytest.mark.parametrize("text", ["", "x" * 299, None, {"not_text": "x" * 400}])
+def test_fetch_page_rejects_empty_or_thin_text(text) -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "result": {
+                    "data": {
+                        "results": [
+                            {
+                                "url": "https://example.com/news/event",
+                                "text": text,
+                            }
+                        ]
+                    }
+                }
+            },
+        )
+
+    tools = ArenaToolClient(
+        client=httpx.Client(transport=httpx.MockTransport(handle))
+    )
+
+    with pytest.raises(RuntimeError, match="fewer than 300 text characters"):
+        tools.fetch_page({"url": "https://example.com/news/event"})
+
+
+def test_fetch_page_surfaces_nested_exa_status_error() -> None:
+    target = "https://example.com/news/missing"
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "result": {
+                    "data": {
+                        "results": [],
+                        "statuses": [
+                            {
+                                "id": target,
+                                "status": "error",
+                                "error": {
+                                    "tag": "CRAWL_NOT_FOUND",
+                                    "httpStatusCode": 404,
+                                },
+                            }
+                        ],
+                    }
+                }
+            },
+        )
+
+    tools = ArenaToolClient(
+        client=httpx.Client(transport=httpx.MockTransport(handle))
+    )
+
+    with pytest.raises(RuntimeError, match="reported an error"):
+        tools.fetch_page({"url": target})
+
+
+@pytest.mark.parametrize(
+    "result, message",
+    [
+        (None, "no result"),
+        ({"text": "x" * 300}, "no valid evidence URL"),
+        ({"url": "/relative", "text": "x" * 300}, "no valid evidence URL"),
+        (
+            {
+                "url": "https://example.com/event",
+                "text": "x" * 300,
+                "error": {"httpStatusCode": 404},
+            },
+            "reported an error",
+        ),
+    ],
+)
+def test_fetch_page_rejects_unusable_result(result, message) -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            json={"results": [] if result is None else [result]},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        tools = ArenaToolClient(client=client)
+        with pytest.raises(RuntimeError, match=message):
+            tools.fetch_page({"url": "https://example.com/event"})
+
+
+def test_search_web_surfaces_nested_exa_error() -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "status": "completed",
+                "result": {
+                    "data": {
+                        "error": {"tag": "SEARCH_FAILED"},
+                        "results": [],
+                    }
+                },
+            },
+        )
+
+    tools = ArenaToolClient(
+        client=httpx.Client(transport=httpx.MockTransport(handle))
+    )
+
+    with pytest.raises(RuntimeError, match="Exa search reported an error"):
+        tools.search_web({"query": "Example launch"})
+
+
+def test_exa_projection_keeps_evidence_fields_and_caps_query(
     monkeypatch,
 ) -> None:
     requests: list[httpx.Request] = []
 
     def handle(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        if request.url.path == "/google_news":
+        if request.url.path.endswith("/exa_search/execute"):
+            request_body = json.loads(request.content)
+            query = request_body["payload"]["query"]
+            if "jobs OR careers OR hiring" in query:
+                return httpx.Response(
+                    200,
+                    request=request,
+                    json={
+                        "results": [
+                            {
+                                "title": "Cloud engineer",
+                                "url": "https://jobs.example.com/apply?id=7#form",
+                            }
+                        ]
+                    },
+                )
             return httpx.Response(
                 200,
                 request=request,
                 json={
-                    "news_results": [
+                    "results": [
                         {"title": "No evidence URL"},
-                        {"title": "Relative URL", "link": "/news/item"},
+                        {"title": "Relative URL", "url": "/news/item"},
                         {
                             "title": "Verified launch",
-                            "link": "https://example.com/news/launch#details",
-                            "extensions": ["2 days ago", "Example newsroom"],
+                            "url": "https://example.com/news/launch#details",
+                            "publishedDate": "2026-09-01T00:00:00.000Z",
+                            "highlights": ["2 days ago", "Example newsroom"],
                         },
-                    ]
-                },
-            )
-        if request.url.path == "/google_jobs":
-            return httpx.Response(
-                200,
-                request=request,
-                json={
-                    "jobs_results": [
-                        {
-                            "title": "Cloud engineer",
-                            "apply_links": [
-                                {"link": "javascript:void(0)"},
-                                {
-                                    "url": "https://jobs.example.com/apply?id=7#form"
-                                },
-                            ],
-                        },
-                        {"title": "Missing application link"},
                     ]
                 },
             )
@@ -159,12 +325,16 @@ def test_scrapingdog_projection_keeps_evidence_fields_and_caps_query(
         }
     )
     jobs = tools.search_web({"query": "Example", "mode": "jobs", "limit": 5})
+    tools.search_web({"query": "vertical SaaS", "mode": "search", "limit": 1})
+    tools.search_web({"query": "Example news", "mode": "news", "limit": 1})
 
     assert news == {
         "results": [
             {
                 "title": "Verified launch",
-                "details": ["2 days ago", "Example newsroom"],
+                "date": "2026-09-01T00:00:00.000Z",
+                "snippet": "2 days ago Example newsroom",
+                "source": "Exa",
                 "url": "https://example.com/news/launch",
             }
         ],
@@ -175,19 +345,38 @@ def test_scrapingdog_projection_keeps_evidence_fields_and_caps_query(
         "results": [
             {
                 "title": "Cloud engineer",
-                "apply_url": "https://jobs.example.com/apply?id=7",
+                "source": "Exa",
                 "url": "https://jobs.example.com/apply?id=7",
             }
         ],
         "count": 1,
         "mode": "jobs",
     }
-    news_query = requests[0].url.params["query"]
+    news_payload = json.loads(requests[0].content)["payload"]
+    news_query = news_payload["query"]
     assert len(news_query) == 500
-    assert news_query.endswith(" after:2026-08-05")
-    assert requests[1].url.params["query"].endswith(
-        " (jobs OR careers OR hiring)"
-    )
+    assert "after:" not in news_query
+    assert news_payload["category"] == "news"
+    assert news_payload["startPublishedDate"] == "2026-08-05T00:00:00Z"
+    assert news_payload["endPublishedDate"] == "2026-09-04T23:59:59Z"
+    assert news_payload["contents"] == {
+        "highlights": True,
+        "livecrawl": "preferred",
+        "maxAgeHours": 0,
+    }
+    jobs_payload = json.loads(requests[1].content)["payload"]
+    assert jobs_payload["query"].endswith(" (jobs OR careers OR hiring)")
+    assert "category" not in jobs_payload
+    assert "startPublishedDate" not in jobs_payload
+    assert "endPublishedDate" not in jobs_payload
+    fit_payload = json.loads(requests[2].content)["payload"]
+    assert fit_payload["query"] == "vertical SaaS"
+    assert "category" not in fit_payload
+    assert "startPublishedDate" not in fit_payload
+    assert "endPublishedDate" not in fit_payload
+    default_news_payload = json.loads(requests[3].content)["payload"]
+    assert default_news_payload["startPublishedDate"] == "2025-09-04T00:00:00Z"
+    assert default_news_payload["endPublishedDate"] == "2026-09-04T23:59:59Z"
 
 
 def test_openrouter_header_filter_removes_sdk_credentials() -> None:

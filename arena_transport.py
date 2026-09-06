@@ -8,7 +8,6 @@ credentials and enforces its own call, cost, token, and time limits.
 from __future__ import annotations
 
 from datetime import date, timedelta
-from html.parser import HTMLParser
 import json
 import os
 import re
@@ -177,74 +176,6 @@ def arena_openrouter_http_client(timeout: float) -> httpx.AsyncClient:
     )
 
 
-class _TextExtractor(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.parts: list[str] = []
-        self.title_parts: list[str] = []
-        self._ignored_depth = 0
-        self._title_depth = 0
-
-    def handle_starttag(
-        self, tag: str, attrs: list[tuple[str, str | None]]
-    ) -> None:
-        del attrs
-        normalized = tag.casefold()
-        if normalized in {"script", "style"}:
-            self._ignored_depth += 1
-        elif normalized == "title" and self._ignored_depth == 0:
-            self._title_depth += 1
-
-    def handle_endtag(self, tag: str) -> None:
-        normalized = tag.casefold()
-        if normalized in {"script", "style"} and self._ignored_depth:
-            self._ignored_depth -= 1
-        elif normalized == "title" and self._title_depth:
-            self._title_depth -= 1
-
-    def handle_data(self, data: str) -> None:
-        if self._ignored_depth:
-            return
-        text = " ".join(str(data).split())
-        if text and self._title_depth:
-            self.title_parts.append(text)
-        elif text:
-            self.parts.append(text)
-
-
-def _page_content(value: str, limit: int) -> tuple[str, str]:
-    parser = _TextExtractor()
-    try:
-        parser.feed(value)
-        parser.close()
-    except Exception:
-        without_hidden = re.sub(
-            r"<(script|style)\b[^>]*>.*?</\1\s*>",
-            " ",
-            value,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
-        title_match = re.search(
-            r"<title\b[^>]*>(.*?)</title\s*>",
-            without_hidden,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
-        title = (
-            " ".join(re.sub(r"<[^>]+>", " ", title_match.group(1)).split())[:500]
-            if title_match
-            else ""
-        )
-        without_title = re.sub(
-            r"<title\b[^>]*>.*?</title\s*>",
-            " ",
-            without_hidden,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
-        text = " ".join(re.sub(r"<[^>]+>", " ", without_title).split())[:limit]
-        return title, text
-    return " ".join(parser.title_parts)[:500], " ".join(parser.parts)[:limit]
-
-
 def _evidence_url(value: Any) -> str:
     try:
         return _public_http_url(str(value or ""))
@@ -282,6 +213,33 @@ def _result_data(payload: Any) -> dict[str, Any]:
         return data if isinstance(data, dict) else result
     data = payload.get("data")
     return data if isinstance(data, dict) else payload
+
+
+def _exa_reported_error(payload: Any, *, depth: int = 0) -> bool:
+    """Detect failed Exa replies even when Deepline returns HTTP 200."""
+
+    if not isinstance(payload, dict) or depth > 5:
+        return False
+    if payload.get("error") not in (None, "", False, [], {}):
+        return True
+    if payload.get("errors") not in (None, "", False, [], {}):
+        return True
+    if str(payload.get("status") or "").casefold() in {
+        "error",
+        "failed",
+        "failure",
+    }:
+        return True
+    for key in ("toolResponse", "result", "data", "raw", "rawV2"):
+        if _exa_reported_error(payload.get(key), depth=depth + 1):
+            return True
+    for key in ("statuses", "results"):
+        items = payload.get(key)
+        if isinstance(items, list) and any(
+            _exa_reported_error(item, depth=depth + 1) for item in items[:100]
+        ):
+            return True
+    return False
 
 
 def _json_safe(value: Any, *, depth: int = 0) -> Any:
@@ -627,68 +585,59 @@ class ArenaToolClient:
             or os.environ.get("LAB_ARENA_EVALUATION_DATE")
             or date.today().isoformat()
         )
-        suffix = ""
+        start_published: date | None = None
         if recency not in (None, ""):
-            suffix += " after:" + (
-                evaluation - timedelta(days=max(1, int(recency)))
-            ).isoformat()
+            start_published = evaluation - timedelta(days=max(1, int(recency)))
         elif mode == "news":
-            suffix += " after:" + (evaluation - timedelta(days=365)).isoformat()
+            start_published = evaluation - timedelta(days=365)
+        suffix = ""
         if mode == "jobs":
             suffix += " (jobs OR careers OR hiring)"
         query = query[: max(0, 500 - len(suffix))].rstrip() + suffix
         limit = max(1, min(int(arguments.get("limit") or 5), 5))
-        endpoint = {
-            "search": "google",
-            "news": "google_news",
-            "jobs": "google_jobs",
-        }[mode]
-        payload = self._json_request(
-            "GET",
-            f"http://api.scrapingdog.com/{endpoint}",
-            params={"query": query},
-        )
-        result_key = {
-            "search": "organic_results",
-            "news": "news_results",
-            "jobs": "jobs_results",
-        }[mode]
-        raw_rows = payload.get(result_key, [])
+        request: dict[str, Any] = {
+            "query": query,
+            "numResults": limit,
+            "type": "auto",
+            "contents": {
+                "highlights": True,
+                "livecrawl": "preferred",
+                "maxAgeHours": 0,
+            },
+        }
+        if mode == "news":
+            request["category"] = "news"
+        if start_published is not None:
+            request["startPublishedDate"] = f"{start_published.isoformat()}T00:00:00Z"
+            request["endPublishedDate"] = f"{evaluation.isoformat()}T23:59:59Z"
+        payload = self._deepline("exa_search", request)
+        if _exa_reported_error(payload):
+            raise RuntimeError("Exa search reported an error")
+        data = _result_data(payload)
+        raw_rows = data.get("results")
+        if not isinstance(raw_rows, list):
+            raise RuntimeError("Exa search returned malformed results")
         rows: list[dict[str, Any]] = []
         seen_urls: set[str] = set()
-        for raw in raw_rows if isinstance(raw_rows, list) else []:
+        for raw in raw_rows:
             if not isinstance(raw, dict):
                 continue
             row: dict[str, Any] = {}
-            for key in (
-                "title",
-                "snippet",
-                "source",
-                "company_name",
-                "location",
-                "via",
-            ):
-                if raw.get(key) not in (None, "", [], {}):
-                    row[key] = _json_safe(raw[key])
-            observed = raw.get("date") or raw.get("lastUpdated")
+            highlights = raw.get("highlights")
+            snippet = " ".join(
+                str(item).strip()
+                for item in (highlights if isinstance(highlights, list) else [])
+                if str(item).strip()
+            )
+            if raw.get("title") not in (None, ""):
+                row["title"] = _json_safe(raw["title"])
+            if snippet:
+                row["snippet"] = snippet[:1_000]
+            observed = raw.get("publishedDate")
             if observed:
                 row["date"] = _json_safe(observed)
-            extensions = raw.get("extensions")
-            if isinstance(extensions, list):
-                row["details"] = _json_safe(extensions[:6])
-            apply_url = ""
-            apply_links = raw.get("apply_links")
-            if isinstance(apply_links, list):
-                for candidate in apply_links:
-                    if not isinstance(candidate, dict):
-                        continue
-                    apply_url = _evidence_url(
-                        candidate.get("link") or candidate.get("url")
-                    )
-                    if apply_url:
-                        row["apply_url"] = apply_url
-                        break
-            url = _evidence_url(raw.get("url") or raw.get("link")) or apply_url
+            row["source"] = "Exa"
+            url = _evidence_url(raw.get("url") or raw.get("id"))
             if not url:
                 continue
             if url in seen_urls:
@@ -706,20 +655,39 @@ class ArenaToolClient:
         if parsed.scheme != "https" or not parsed.hostname:
             raise ValueError("an absolute HTTPS URL is required")
         max_chars = max(1_000, min(int(arguments.get("max_chars") or 2_500), 4_000))
-        response = self._client.get(
-            "http://api.scrapingdog.com/scrape",
-            params={"url": url, "dynamic": "false"},
-            timeout=self.timeout,
+        payload = self._deepline(
+            "exa_contents",
+            {
+                "urls": [url],
+                "text": {"maxCharacters": max_chars},
+                "maxAgeHours": 0,
+            },
         )
-        if not response.is_success:
-            raise RuntimeError(f"Arena page fetch returned HTTP {response.status_code}")
-        title, text = _page_content(response.text, max_chars)
+        if _exa_reported_error(payload):
+            raise RuntimeError("Exa contents reported an error")
+        data = _result_data(payload)
+        results = data.get("results")
+        result = (
+            next((item for item in results if isinstance(item, dict)), None)
+            if isinstance(results, list)
+            else None
+        )
+        if result is None:
+            raise RuntimeError("Exa contents returned no result")
+        result_url = _evidence_url(result.get("url") or result.get("id"))
+        if not result_url:
+            raise RuntimeError("Exa contents returned no valid evidence URL")
+        title = str(result.get("title") or "")[:500]
+        raw_text = result.get("text")
+        text = raw_text.strip()[:max_chars] if isinstance(raw_text, str) else ""
+        if len(text) < 300:
+            raise RuntimeError("Exa contents returned fewer than 300 text characters")
         return {
-            "url": url,
-            "status_code": response.status_code,
+            "url": result_url,
+            "status_code": 200,
             "title": title,
             "text": text,
-            "source": "ScrapingDog",
+            "source": "Exa",
         }
 
     def call(self, name: str, arguments: dict[str, Any]) -> Any:
