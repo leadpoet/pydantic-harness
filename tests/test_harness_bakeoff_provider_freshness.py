@@ -386,6 +386,7 @@ class ProviderFreshnessTests(unittest.TestCase):
                             "title": "Another display name | LinkedIn",
                             "text": (
                                 "## About\nCompany size 51-200 employees\n"
+                                "Headquarters Boston, Massachusetts\n"
                                 "94 associated members\n## Updates"
                             ),
                         }
@@ -409,6 +410,8 @@ class ProviderFreshnessTests(unittest.TestCase):
                 "title": "Another display name | LinkedIn",
                 "employee_count": "51-200",
                 "quote": "Company size 51-200 employees",
+                "listed_headquarters": "Boston, Massachusetts",
+                "headquarters_quote": "Headquarters Boston, Massachusetts",
             },
         )
         self.assertEqual(profile["errors"], [])

@@ -38,6 +38,26 @@ _COMPANY_SIZE_RE = re.compile(
     rf"(?:[ \t]+employees?)?[ \t]*$"
 )
 _MAX_TITLE_CHARS = 300
+_MAX_HEADQUARTERS_CHARS = 300
+_ABOUT_FIELD_LABELS = (
+    "company size",
+    "founded",
+    "headquarters",
+    "industry",
+    "locations",
+    "specialties",
+    "type",
+    "website",
+)
+_ABOUT_FIELD_PATTERN = "|".join(
+    re.escape(value) for value in sorted(_ABOUT_FIELD_LABELS, key=len, reverse=True)
+)
+_HEADQUARTERS_RE = re.compile(
+    rf"(?im)^[ \t]*(?:\*{{1,2}})?headquarters(?:\*{{1,2}})?[ \t]*"
+    rf"(?::[ \t]*(?:\r?\n[ \t]*)*|[ \t]+|(?:[ \t]*\r?\n)+[ \t]*)"
+    rf"(?P<value>[^\r\n]{{1,{_MAX_HEADQUARTERS_CHARS}}}?)[ \t]*"
+    rf"(?=(?:[ \t]+(?:{_ABOUT_FIELD_PATTERN})(?:[ \t:]+|$))|$)"
+)
 
 
 def linkedin_company_profile_url(value: Any) -> str | None:
@@ -116,7 +136,7 @@ def _profile_key(value: Any) -> tuple[str, str] | None:
     return ("linkedin.com", match.group("slug").casefold())
 
 
-def _company_size_from_about(text: Any) -> tuple[str, str] | None:
+def _about_section(text: Any) -> str | None:
     if not isinstance(text, str):
         return None
     about = _ABOUT_HEADING_RE.search(text)
@@ -124,10 +144,35 @@ def _company_size_from_about(text: Any) -> tuple[str, str] | None:
         return None
     end = _ABOUT_END_RE.search(text, about.end())
     section_end = end.start() if end is not None else len(text)
-    match = _COMPANY_SIZE_RE.search(text, about.end(), section_end)
+    return text[about.end() : section_end]
+
+
+def _company_size_from_about(text: Any) -> tuple[str, str] | None:
+    section = _about_section(text)
+    if section is None:
+        return None
+    match = _COMPANY_SIZE_RE.search(section)
     if match is None:
         return None
     return match.group("band"), match.group(0)
+
+
+def _headquarters_from_about(text: Any) -> tuple[str, str] | None:
+    section = _about_section(text)
+    if section is None:
+        return None
+    match = _HEADQUARTERS_RE.search(section)
+    if match is None:
+        return None
+    value = match.group("value").strip()
+    if (
+        not value
+        or len(value) > _MAX_HEADQUARTERS_CHARS
+        or value.casefold() in _ABOUT_FIELD_LABELS
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        return None
+    return value, match.group(0).strip()
 
 
 def project_linkedin_profile_evidence(
@@ -146,7 +191,7 @@ def project_linkedin_profile_evidence(
         raise ValueError("explicit LinkedIn Company size band is missing")
     employee_count, quote = extracted
     title = result.get("title")
-    return {
+    evidence = {
         "url": str(result_url),
         "title": str(title).strip()[:_MAX_TITLE_CHARS]
         if isinstance(title, str)
@@ -154,6 +199,10 @@ def project_linkedin_profile_evidence(
         "employee_count": employee_count,
         "quote": quote,
     }
+    headquarters = _headquarters_from_about(result.get("text"))
+    if headquarters is not None:
+        evidence["listed_headquarters"], evidence["headquarters_quote"] = headquarters
+    return evidence
 
 
 __all__ = [

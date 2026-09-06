@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from experiments.harness_bakeoff.linkedin_profile import (
@@ -29,6 +31,8 @@ Example builds business software and has 500 employees worldwide.
 
 Company size
 11-50 employees
+Headquarters
+Across Massachusetts
 89 associated members
 View all 89 employees
 
@@ -45,8 +49,18 @@ View all 89 employees
         "title": "Unrelated name | LinkedIn",
         "employee_count": "11-50",
         "quote": "Company size\n11-50 employees",
+        "listed_headquarters": "Across Massachusetts",
+        "headquarters_quote": "Headquarters\nAcross Massachusetts",
     }
-    assert set(evidence) == {"url", "title", "employee_count", "quote"}
+    assert set(evidence) == {
+        "url",
+        "title",
+        "employee_count",
+        "quote",
+        "listed_headquarters",
+        "headquarters_quote",
+    }
+    assert json.loads(json.dumps(evidence)) == evidence
 
 
 @pytest.mark.parametrize(
@@ -163,3 +177,46 @@ def test_extracts_live_inline_company_size_format() -> None:
 
     assert evidence["employee_count"] == "501-1,000"
     assert evidence["quote"] == "Company size 501-1,000 employees"
+    assert evidence["listed_headquarters"] == "San Francisco, California"
+    assert evidence["headquarters_quote"] == "Headquarters San Francisco, California"
+
+
+@pytest.mark.parametrize(
+    "headquarters_text",
+    [
+        "Across Massachusetts",
+        "Headquarters\nType\nPrivately Held",
+        "Headquarters " + ("A" * 301),
+        "Headquarters Across\tMassachusetts",
+        "## Updates\nHeadquarters After Updates",
+    ],
+)
+def test_omits_missing_or_invalid_headquarters_without_losing_size(
+    headquarters_text: str,
+) -> None:
+    evidence = project_linkedin_profile_evidence(
+        PROFILE_URL,
+        _result(
+            "## About\nCompany size 11-50 employees\n"
+            + headquarters_text
+            + "\n## Updates"
+        ),
+    )
+
+    assert evidence["employee_count"] == "11-50"
+    assert "listed_headquarters" not in evidence
+    assert "headquarters_quote" not in evidence
+
+
+def test_ignores_headquarters_outside_about_section_and_stops_at_next_field() -> None:
+    evidence = project_linkedin_profile_evidence(
+        PROFILE_URL,
+        _result(
+            "Headquarters Before About\n## About\nCompany size 11-50 employees\n"
+            "Headquarters Boston, Massachusetts Type Privately Held\n"
+            "## Updates\nHeadquarters After Updates"
+        ),
+    )
+
+    assert evidence["listed_headquarters"] == "Boston, Massachusetts"
+    assert evidence["headquarters_quote"] == "Headquarters Boston, Massachusetts"

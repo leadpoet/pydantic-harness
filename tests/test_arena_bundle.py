@@ -488,7 +488,8 @@ def test_company_profile_adds_separate_current_linkedin_size_evidence() -> None:
                         "title": "A different display name | LinkedIn",
                         "text": (
                             "## About\nBusiness software.\n\nCompany size "
-                            "11-50 employees\n89 associated members\n"
+                            "11-50 employees\nHeadquarters Austin, Texas\n"
+                            "89 associated members\n"
                             "View all 89 employees\n\n## Employees at Example\n"
                             "89 employees\n\n## Updates"
                         ),
@@ -521,6 +522,8 @@ def test_company_profile_adds_separate_current_linkedin_size_evidence() -> None:
         "title": "A different display name | LinkedIn",
         "employee_count": "11-50",
         "quote": "Company size 11-50 employees",
+        "listed_headquarters": "Austin, Texas",
+        "headquarters_quote": "Headquarters Austin, Texas",
     }
     assert profile["latest_financing_events"][0]["data"]["returned_count"] == 1
     assert profile["errors"] == []

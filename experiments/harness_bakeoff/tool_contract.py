@@ -48,7 +48,8 @@ TOOL_DESCRIPTIONS = {
         "returned. Empty financing results are not proof that no later funding exists. "
         "Optional linkedin_profile_evidence.employee_count comes only from an explicit "
         "LinkedIn Company size label, never an associated-employee count. Bind that "
-        "source to the requested company before using it."
+        "source to the requested company before using it. Optional listed_headquarters "
+        "is the profile's literal public Headquarters label, not a verified legal HQ."
     ),
     "get_company_events": (
         "Find live company events such as jobs or financing for one domain. For "
