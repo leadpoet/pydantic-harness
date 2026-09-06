@@ -259,6 +259,8 @@ class HarnessContractTests(unittest.TestCase):
         self.assertIn("product_service describes what the target company sells", prompt)
         self.assertIn("not the seller's offering or what the target wants to buy", prompt)
         self.assertIn("verified event's effect on the target's actual operations or growth", prompt)
+        self.assertIn("current majority or controlling private-equity ownership", prompt)
+        self.assertIn("not merely a strategic investment", prompt)
 
     def test_prompt_does_not_trust_stored_linkedin_url(self) -> None:
         prompt = build_prompt({"icp_id": "today"})
