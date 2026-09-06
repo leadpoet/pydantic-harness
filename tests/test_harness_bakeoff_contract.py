@@ -323,8 +323,19 @@ class HarnessContractTests(unittest.TestCase):
         self.assertIn("fetch the original dated announcement, not just the summary", prompt)
         self.assertIn("distinguish a completed entry from a non-binding MoU or a plan", prompt)
         self.assertIn("Verify each country separately", prompt)
+        self.assertIn(
+            "Require source proof of entry into a new geography, customer market, or distinct commercial segment",
+            prompt,
+        )
+        self.assertIn(
+            "another facility, asset, or capacity increase in an existing market is insufficient",
+            prompt,
+        )
+        self.assertIn("unless the source explicitly connects it", prompt)
         icp["intent_category"] = "FUNDING"
         self.assertNotIn("Verify each country separately", build_prompt(icp))
+        icp["intent_category"] = "FACILITY_OPENING"
+        self.assertNotIn("another facility, asset, or capacity increase", build_prompt(icp))
 
     def test_output_schema_guides_stage_without_narrowing_host_contract(self) -> None:
         schema = company_list_json_schema()["items"]

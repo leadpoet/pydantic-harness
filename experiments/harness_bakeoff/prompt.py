@@ -40,7 +40,10 @@ def build_prompt(icp: dict[str, Any], max_companies: int | None = None) -> str:
     )
     expansion_guidance = (
         "For market expansion, distinguish a completed entry from a non-binding MoU or a plan. "
-        "Verify each country separately; do not combine an actual entry with a planned one.\n"
+        "Verify each country separately; do not combine an actual entry with a planned one. "
+        "Require source proof of entry into a new geography, customer market, or distinct commercial "
+        "segment; another facility, asset, or capacity increase in an existing market is insufficient "
+        "unless the source explicitly connects it to that new-market entry.\n"
         if primary.get("category") == "MARKET_EXPANSION"
         else ""
     )
