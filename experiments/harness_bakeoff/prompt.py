@@ -13,8 +13,43 @@ from .models import normalize_icp
 SYSTEM_PROMPT = """You are a rigorous B2B account researcher. Find companies that fit the supplied ICP and have the REQUIRED recent intent. Use only the provided tools. Never rely on memory for a factual claim. Verify company fit, company stage, every required attribute, and each intent against public source content. Preserve exact source URLs and reject stale, ambiguous, homepage-only, or wrong-company evidence. Prefer direct company, job, regulatory, filing, or reputable news pages. Return at most the requested number, ranked best first. Explain fit and why-now in plain language useful to a salesperson. Do not invent missing facts. Call submit_companies exactly once when done."""
 
 
+_REDUNDANT_INTENT_FIELDS = frozenset(
+    {
+        "bonus_intents",
+        "intent_category",
+        "intent_max_age_days",
+        "intent_signal",
+        "intent_signal_evidence_types",
+        "intent_signal_max_age_days",
+        "intent_signal_text",
+        "intent_signals",
+        "required_intents",
+    }
+)
+
+
+def _prompt_icp(normalized: dict[str, Any]) -> dict[str, Any]:
+    """Project duplicate intent shapes only when the canonical contract is complete."""
+
+    contract = normalized.get("intent_contract")
+    if not isinstance(contract, list) or not contract:
+        return dict(normalized)
+    canonical_fields = {"index", "signal", "category", "max_age_days", "required"}
+    if any(
+        not isinstance(row, dict) or not canonical_fields.issubset(row)
+        for row in contract
+    ):
+        return dict(normalized)
+    return {
+        key: value
+        for key, value in normalized.items()
+        if key not in _REDUNDANT_INTENT_FIELDS
+    }
+
+
 def build_prompt(icp: dict[str, Any], max_companies: int | None = None) -> str:
     normalized = normalize_icp(icp)
+    prompt_icp = _prompt_icp(normalized)
     limit = max(1, min(int(max_companies or 5), 5))
     required_geography = str(
         normalized.get("geography") or normalized.get("country") or ""
@@ -23,27 +58,24 @@ def build_prompt(icp: dict[str, Any], max_companies: int | None = None) -> str:
     required_attribute = str(normalized.get("required_attribute") or "").strip()
     primary = (normalized.get("intent_contract") or [{}])[0]
     certification_guidance = (
-        "For certification or compliance intent, identify the named clearance, standard, audit, "
-        "or certification actually granted to this company or product and its date. Preserve the "
-        "issuer when stated; do not invent one or require an undisclosed auditor's name. "
-        "A marketplace listing, partner badge, or generic claim of certified or compliant solutions "
-        "does not establish that event.\n"
+        "- Certification/compliance: verify the named clearance, standard, audit, or certification "
+        "was actually granted to this company or product, with its date. Keep a stated issuer; do "
+        "not invent or require an undisclosed auditor. A marketplace listing, partner badge, or "
+        "generic compliance claim is not the event.\n"
         if primary.get("category") == "REGULATORY_CLEARANCE"
         else ""
     )
     hiring_guidance = (
-        "For hiring intent, verify that the job responsibilities directly match the requested "
-        "function; shared words such as systems or platform are insufficient without matching "
-        "work. Do not treat generic hiring or an adjacent function as the requested hiring event.\n"
+        "- Hiring: job responsibilities must directly match the requested function. Shared words "
+        "such as systems or platform, generic hiring, or an adjacent function are insufficient.\n"
         if primary.get("category") == "HIRING"
         else ""
     )
     expansion_guidance = (
-        "For market expansion, distinguish a completed entry from a non-binding MoU or a plan. "
-        "Verify each country separately; do not combine an actual entry with a planned one. "
-        "Require source proof of entry into a new geography, customer market, or distinct commercial "
-        "segment; another facility, asset, or capacity increase in an existing market is insufficient "
-        "unless the source explicitly connects it to that new-market entry.\n"
+        "- Market expansion: require source proof of completed entry into a new geography, customer "
+        "market, or distinct commercial segment. A non-binding MoU, plan, or added facility, asset, "
+        "or capacity in an existing market is insufficient unless the source explicitly connects it "
+        "to that new-market entry. Verify each country separately; do not combine actual and planned entry.\n"
         if primary.get("category") == "MARKET_EXPANSION"
         else ""
     )
@@ -55,88 +87,65 @@ def build_prompt(icp: dict[str, Any], max_companies: int | None = None) -> str:
     evaluation_date = date.fromisoformat(raw_day) if raw_day else date.today()
     return (
         f"Evaluation date: {evaluation_date.isoformat()}\n"
-        f"Return up to {limit} companies. A company without a verified required intent must not be returned.\n"
-        "The matched_icp_signal index refers to intent_contract below. Preserve its "
-        "index exactly. Research required=true rows first. Index 0 is the host's required "
-        "primary intent; bonus evidence must never replace it. Do not treat a required=false "
-        "bonus row as required:\n"
-        f"{json.dumps(normalized, ensure_ascii=False, indent=2, sort_keys=True)}\n\n"
-        "Required fit before submission:\n"
+        f"Return up to {limit} companies. Omit a company without verified required intent.\n\n"
+        "Intent contract:\n"
+        "- matched_icp_signal must preserve the listed index. Index 0 is the required primary. Research "
+        "and verify every required=true row before any bonus; required=false is optional and never "
+        "replaces required evidence.\n"
+        "- Apply each max_age_days from the evaluation date.\n"
+        f"{json.dumps(prompt_icp, ensure_ascii=False, separators=(',', ':'), sort_keys=True)}\n\n"
+        "Required fit:\n"
         f"- Geography: {required_geography or 'not specified'}\n"
         f"- Company stage: {required_stage or 'not specified'}\n"
         f"- Required attribute: {required_attribute or 'not specified'}\n"
         f"{certification_guidance}"
         f"{hiring_guidance}"
         f"{expansion_guidance}"
-        "Verify the ICP industry, geography, employee band, stage, and required attribute; "
-        "omit any company with a missing or conflicting required fact. If company_stage is "
-        "required, check the latest funding or ownership status, not just a historical round matching "
-        "the ICP, and preserve the verified stage. Normalize only true "
-        "synonyms of known labels such as Seed, Series A, Series B, Series C+, Private Equity, "
-        "Public, or Bootstrapped. Series C+ includes verified Series C and later venture rounds. "
-        "Use Private Equity only for verified current majority or controlling private-equity ownership, "
-        "not merely a strategic investment, and Public only for a "
-        "company with publicly listed shares. Never copy the requested stage when the evidence "
-        "does not prove it. When the ICP lists employee buckets, return one exact listed bucket "
-        "after harmless formatting normalization only; otherwise preserve the actual verified band. If "
-        "required_attribute is present in the ICP, include a required_attribute object with "
-        "the literal same requirement text, passed=true, one direct evidence URL, a supporting quote, "
-        "and a short explanation. Do not return a company when either required fact cannot be "
-        "verified. Keep fit discovery separate from event verification. For a narrow dated primary "
-        "event, begin with one focused search_web news or jobs query; after a dated hit, profile its "
-        "domain and fetch_page on the best URL before any more candidate search. Otherwise begin with "
-        "search_companies using a short industry or business-type query plus structured fit filters; "
-        "keep intent and a literal stage label out of that query. For Series C+, search for and verify "
-        "Series C, Series D, or a later venture round, not the label alone. After empty discovery, "
-        "change the query and loosen exactly one discovery filter or use one broad search_web fallback; "
-        "never loosen final fit. Make at most two search_companies calls and three total candidate-finding "
-        "calls before verifying an available plausible candidate. "
-        "Keep a short queue of distinct plausible dated hits, prioritizing a hit that names both the "
-        "required stage and primary event. Before another search on a domain whose profile is empty or "
-        "whose identity or required fit failed, verify the strongest untested queued hit; revisit the "
-        "rejected domain only when new direct evidence resolves its exact failed fact. "
-        f"Shortlist at most {min(limit + 2, 7)} domains and expand once only when fewer than "
-        "the requested count remain after fit checks. A verified_example_company is input context, "
-        "not an answer; never return it unless tool evidence independently qualifies it in this run. "
-        "Use get_company_profile or one focused fit search only when discovery lacks a required fit "
-        "fact. A profile database can be stale: when a current company page or LinkedIn company "
-        "page contradicts it, use the current supported fact, not the older profile value. "
-        "Treat a stored profile's LinkedIn URL as an unverified candidate, not a canonical fact. "
-        "Use current page evidence for the canonical company URL; if it cannot be verified, leave "
-        "the optional company_linkedin field empty. "
-        "Treat employee_count_estimate from discovery or a stored profile as shortlist-only: it is "
-        "not current exact staff and cannot prove an employee band. Source a current public employee "
-        "band before returning; never choose one just because it appears in the ICP. Report the "
-        "supported band, not a bucket boundary or LinkedIn profile count as exact staff. "
-        "In fit_summary, state only the supported employee band; do not include exact staff estimates. "
-        "For each qualified domain, try get_company_events or one focused search_web query for the "
-        "primary intent and use the other only when the first has no usable evidence. Fetch the best "
-        "evidence URL, "
-        "with one alternate after a failed or unsupported page. Never repeat an equivalent query, "
-        "domain lookup, or URL. If a search_web query restricted by a site: filter for an already named "
-        "candidate returns no results, replace a near-repeat with the one allowed alternate without a "
-        "site: filter; this is "
-        "not an extra call. If that alternate returns a plausible dated event, verify the company profile "
-        "and fetch the best page before abandoning the candidate. The page must still prove a completed "
-        "event when completion is required; a planned or future event does not qualify. Quote the fetched "
-        "page's main article, not search snippets, navigation, "
-        "or related-article cards. For an event summarized in an annual report or announcement index, "
-        "fetch the original dated announcement, not just the summary. If a related article contains "
-        "the event, fetch that article and use its own URL and date; never attach the surrounding "
-        "page's date to a linked event. The signal date "
-        "must be the actual event or announcement date; never substitute a crawl, page-update, or search "
-        "index date. Preserve event status: beta, preview, pilot, or a future announcement is not "
-        "general availability. For an appointment, distinguish announcement from effective or start "
-        "date; use the date of the claimed event and never treat a future start as completed. Industry, "
-        "size, and general activity prove fit, not buying intent. In why_now, state the verified event, "
-        "then one commercial implication clearly as a possibility. Separate inference from sourced "
-        "fact. The ICP product_service describes what the target company sells, not the seller's "
-        "offering or what the target wants to buy. Use it for company fit; tie why_now to the "
-        "verified event's effect on the target's actual operations or growth. Never copy unrelated offerings or "
-        "invent procurement, budget, demand, vendor evaluation, or purchase plans. Avoid benchmark, "
-        "ICP match, scoring, or qualification jargon. "
-        "Vague claims such as 'the company is growing' are insufficient. Submit as soon as enough "
-        "companies pass or the remaining budget "
-        "cannot improve the result. Company homepages may support identity or fit, but cannot alone prove "
-        "a dated intent event. Submit ordinary JSON matching the declared company schema."
+        "- Verify required industry, company-HQ geography, current employee band, stage, attribute, and "
+        "other stated fit requirements from public evidence; omit missing or conflicting required facts. "
+        "An office, facility, job, or served market is not HQ.\n"
+        "- For stage, use latest funding/ownership. Preserve the proven stage; normalize only true synonyms "
+        "of Seed, Series A, Series B, Series C+, Private Equity, Public, or Bootstrapped. Series C+ requires "
+        "Series C or later. Private Equity requires current majority/controlling PE ownership, not an "
+        "investment; Public requires listed shares. Never copy an unproven requested stage.\n"
+        "- Employee estimates from discovery/profile are shortlist clues, not bands or current exact staff. "
+        "Verify a current public band. If the ICP lists buckets, return one listed bucket after formatting-only "
+        "normalization; never infer it from an estimate, boundary, or ICP request. Put only the supported band, "
+        "never an exact estimate, in fit_summary.\n"
+        "- If required_attribute exists, return its literal text, passed=true, direct evidence URL, quote, "
+        "and explanation; omit the company if that evidence cannot be verified. With no requirement, no "
+        "required_attribute object is needed.\n\n"
+        "Research order and limits:\n"
+        "1. Keep fit discovery separate from event verification. For a narrow dated primary event, start with "
+        "one focused search_web news/jobs query using business context and required stage. For Series C+, "
+        "search Series C, Series D, or later. Queue distinct dated hits; prioritize one naming the required "
+        "stage and primary event. Profile its domain and fetch_page on the exact returned URL before more discovery.\n"
+        "2. Otherwise use search_companies with a short business-type query and structured fit filters; omit "
+        "intent and literal stage. After empty discovery, change the query and loosen one discovery filter or "
+        "use one broad search_web fallback; never loosen final fit.\n"
+        "3. Make at most two search_companies and three total candidate-finding calls before verifying a plausible "
+        "candidate. Verify the strongest untested queued hit before revisiting an empty/failed domain; revisit only "
+        "with new direct evidence for its failed fact. Never repeat an equivalent query, domain, or URL.\n"
+        f"4. Shortlist at most {min(limit + 2, 7)} domains; expand once only if needed. A verified_example_company "
+        "is context, not proof. Use get_company_profile or one focused fit search only for a missing required fact. "
+        "Prefer current page evidence over stale profile data. Stored LinkedIn URLs are unverified; establish the "
+        "canonical company URL from a current page or leave company_linkedin empty.\n"
+        "5. For a named candidate whose site: search is empty, use the one allowed non-site alternate instead of a "
+        "near-repeat; it is not an extra call. Verify a resulting dated hit before abandoning the candidate.\n\n"
+        "Event evidence:\n"
+        "- Per candidate, try get_company_events or one focused primary-intent search; use the other only if needed. "
+        "Fetch the best returned URL, with one alternate after a failed/unsupported page. Never construct a URL. "
+        "A homepage proves identity/fit, not a dated event.\n"
+        "- Quote the fetched article body, not snippets, navigation, or related cards. From an annual report or "
+        "announcement index, fetch the original dated announcement. A linked event uses its own page, URL, and date.\n"
+        "- Use the actual event/announcement date, never crawl, update, or index dates. Preserve source status: beta, "
+        "preview, pilot, planned, future, or merely announced is not completed/operational when completion is required. "
+        "For appointments, distinguish announcement, effective, and start dates; a future start is not completed.\n\n"
+        "Explanation and output:\n"
+        "- Fit and activity are not buying intent. In why_now, state the verified event, then label one commercial "
+        "implication as possible; separate sourced fact from inference.\n"
+        "- product_service is what the target sells, not the seller's pitch or a target purchase need. Tie why_now to "
+        "the event's effect on the target's operations/growth. Never copy unrelated offerings. Do not invent procurement, "
+        "budget, demand, evaluation, or purchase plans; avoid benchmark/scoring jargon and vague 'growing' claims.\n"
+        "- Submit ranked, schema-valid JSON when enough companies pass or further work cannot help."
     )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import redirect_stdout
+from copy import deepcopy
 import importlib
 import inspect
 from io import StringIO
@@ -186,6 +187,94 @@ class HarnessContractTests(unittest.TestCase):
         self.assertFalse(normalized["intent_contract"][1]["required"])
         self.assertEqual(normalized["intent_contract"][1]["index"], 1)
 
+    def test_prompt_projects_intents_without_mutating_or_dropping_constraints(
+        self,
+    ) -> None:
+        raw = {
+            "icp_id": "synthetic-efficiency",
+            "industry": "Industrial software for regulated operators",
+            "geography": "United States",
+            "employee_count": ["51-200", "201-500"],
+            "company_stage": "Series C+",
+            "product_service": ["workflow automation", "operations analytics"],
+            "required_attribute": "Supports regulated field operations",
+            "custom_constraint": {
+                "certifications": ["SOC 2"],
+                "exclude": ["consultancies"],
+            },
+            "intent_signal": "Launched a generally available operations product",
+            "intent_category": "PRODUCT_LAUNCH",
+            "intent_max_age_days": 180,
+            "intent_signals": [
+                "Launched a generally available operations product",
+                "Entered a new customer market",
+            ],
+            "intent_signal_evidence_types": [
+                "PRODUCT_LAUNCH",
+                "MARKET_EXPANSION",
+            ],
+            "intent_signal_max_age_days": [180, 365],
+            "required_intents": [
+                {
+                    "signal": "Launched a generally available operations product",
+                    "category": "PRODUCT_LAUNCH",
+                    "max_age_days": 180,
+                }
+            ],
+            "bonus_intents": [
+                {
+                    "signal": "Entered a new customer market",
+                    "category": "MARKET_EXPANSION",
+                    "max_age_days": 365,
+                }
+            ],
+            "intent_source": "public_web",
+        }
+        original = deepcopy(raw)
+
+        with patch.dict(
+            "os.environ", {"BAKEOFF_EVALUATION_DATE": "2026-09-06"}, clear=True
+        ):
+            prompt = build_prompt(raw)
+        displayed = json.loads(
+            next(line for line in prompt.splitlines() if line.startswith("{"))
+        )
+
+        self.assertEqual(raw, original)
+        self.assertEqual(displayed["custom_constraint"], raw["custom_constraint"])
+        self.assertEqual(displayed["intent_source"], "public_web")
+        self.assertEqual(
+            displayed["intent_contract"],
+            [
+                {
+                    "index": 0,
+                    "signal": "Launched a generally available operations product",
+                    "category": "PRODUCT_LAUNCH",
+                    "max_age_days": 180,
+                    "required": True,
+                },
+                {
+                    "index": 1,
+                    "signal": "Entered a new customer market",
+                    "category": "MARKET_EXPANSION",
+                    "max_age_days": 365,
+                    "required": False,
+                },
+            ],
+        )
+        for duplicate in (
+            "intent_signal",
+            "intent_category",
+            "intent_max_age_days",
+            "intent_signals",
+            "intent_signal_evidence_types",
+            "intent_signal_max_age_days",
+            "required_intents",
+            "bonus_intents",
+        ):
+            self.assertNotIn(duplicate, displayed)
+        self.assertLessEqual(len(prompt), 5_660)
+
     def test_prompt_prioritizes_primary_and_requires_event_grounding(self) -> None:
         prompt = build_prompt(
             {
@@ -205,38 +294,32 @@ class HarnessContractTests(unittest.TestCase):
             }
         )
 
-        self.assertIn("Index 0 is the host's required primary intent", prompt)
-        self.assertIn("bonus evidence must never replace it", prompt)
+        self.assertIn("Index 0 is the required primary", prompt)
+        self.assertIn("verify every required=true row before any bonus", prompt)
+        self.assertIn("required=false is optional and never replaces required evidence", prompt)
         self.assertIn("Keep fit discovery separate from event verification", prompt)
-        self.assertIn(
-            "begin with one focused search_web news or jobs query",
-            prompt,
-        )
-        self.assertIn("at most two search_companies calls", prompt)
-        self.assertIn("loosen exactly one discovery filter", prompt)
+        self.assertIn("one focused search_web news/jobs query", prompt)
+        self.assertIn("at most two search_companies and three total candidate-finding", prompt)
+        self.assertIn("loosen one discovery filter", prompt)
         self.assertIn("never loosen final fit", prompt)
-        self.assertIn("three total candidate-finding", prompt)
-        self.assertIn("before verifying an available plausible candidate", prompt)
-        self.assertIn("profile its domain and fetch_page", prompt)
-        self.assertIn("Series C, Series D, or a later venture round", prompt)
-        self.assertIn("Quote the fetched page's main article", prompt)
-        self.assertIn("not search snippets, navigation, or related-article cards", prompt)
-        self.assertIn("never attach the surrounding page's date to a linked event", prompt)
-        self.assertIn("never substitute a crawl, page-update, or search index date", prompt)
+        self.assertIn("before verifying a plausible candidate", prompt)
+        self.assertIn("Profile its domain and fetch_page", prompt)
+        self.assertIn("Series C, Series D, or later", prompt)
+        self.assertIn("Quote the fetched article body", prompt)
+        self.assertIn("not snippets, navigation, or related cards", prompt)
+        self.assertIn("A linked event uses its own page, URL, and date", prompt)
+        self.assertIn("never crawl, update, or index dates", prompt)
         self.assertIn("state the verified event", prompt)
-        self.assertIn("commercial implication clearly as a possibility", prompt)
-        self.assertIn("Separate inference from sourced fact", prompt)
+        self.assertIn("implication as possible", prompt)
+        self.assertIn("separate sourced fact from inference", prompt)
 
     def test_prompt_prioritizes_untested_hits_over_rejected_domains(self) -> None:
         prompt = build_prompt({"icp_id": "candidate-priority"})
 
-        self.assertIn("queue of distinct plausible dated hits", prompt)
+        self.assertIn("Queue distinct dated hits", prompt)
         self.assertIn("required stage and primary event", prompt)
         self.assertIn("strongest untested queued hit", prompt)
-        self.assertIn(
-            "revisit the rejected domain only when new direct evidence resolves",
-            prompt,
-        )
+        self.assertIn("revisit only with new direct evidence", prompt)
 
     def test_prompt_preserves_event_status_and_avoids_sales_fabrication(self) -> None:
         prompt = build_prompt(
@@ -251,66 +334,50 @@ class HarnessContractTests(unittest.TestCase):
             }
         )
 
-        self.assertIn('"company_stage": "Series C+"', prompt)
+        displayed = json.loads(
+            next(line for line in prompt.splitlines() if line.startswith("{"))
+        )
+        self.assertEqual(displayed["company_stage"], "Series C+")
         self.assertIn(
-            "beta, preview, pilot, or a future announcement is not general availability",
+            "beta, preview, pilot, planned, future, or merely announced",
             prompt,
         )
-        self.assertIn(
-            "distinguish announcement from effective or start date",
-            prompt,
-        )
-        self.assertIn("never treat a future start as completed", prompt)
+        self.assertIn("distinguish announcement, effective, and start dates", prompt)
+        self.assertIn("a future start is not completed", prompt)
         self.assertIn("Never copy unrelated offerings", prompt)
         self.assertIn(
-            "invent procurement, budget, demand, vendor evaluation, or purchase plans",
+            "invent procurement, budget, demand, evaluation, or purchase plans",
             prompt,
         )
-        self.assertIn("Avoid benchmark, ICP match, scoring, or qualification jargon", prompt)
-        self.assertIn("product_service describes what the target company sells", prompt)
-        self.assertIn("not the seller's offering or what the target wants to buy", prompt)
-        self.assertIn("verified event's effect on the target's actual operations or growth", prompt)
-        self.assertIn("current majority or controlling private-equity ownership", prompt)
-        self.assertIn("not merely a strategic investment", prompt)
+        self.assertIn("avoid benchmark/scoring jargon", prompt)
+        self.assertIn("product_service is what the target sells", prompt)
+        self.assertIn("not the seller's pitch or a target purchase need", prompt)
+        self.assertIn("event's effect on the target's operations/growth", prompt)
+        self.assertIn("current majority/controlling PE ownership", prompt)
+        self.assertIn("not an investment", prompt)
 
     def test_named_candidate_empty_site_search_uses_existing_alternate(self) -> None:
         prompt = build_prompt({"icp_id": "named-candidate-fallback"})
 
-        self.assertIn(
-            "search_web query restricted by a site: filter for an already named candidate",
-            prompt,
-        )
-        self.assertIn("candidate returns no results", prompt)
-        self.assertIn("replace a near-repeat", prompt)
-        self.assertIn("one allowed alternate without a site: filter", prompt)
-        self.assertIn("this is not an extra call", prompt)
-        self.assertIn("verify the company profile and fetch the best page", prompt)
-        self.assertIn("before abandoning the candidate", prompt)
-        self.assertIn("a planned or future event does not qualify", prompt)
+        self.assertIn("named candidate whose site: search is empty", prompt)
+        self.assertIn("one allowed non-site alternate", prompt)
+        self.assertIn("instead of a near-repeat", prompt)
+        self.assertIn("not an extra call", prompt)
+        self.assertIn("Verify a resulting dated hit before abandoning", prompt)
+        self.assertIn("planned, future, or merely announced is not completed", prompt)
 
     def test_prompt_does_not_trust_stored_linkedin_url(self) -> None:
         prompt = build_prompt({"icp_id": "today"})
 
-        self.assertIn(
-            "stored profile's LinkedIn URL as an unverified candidate",
-            prompt,
-        )
-        self.assertIn("Use current page evidence for the canonical company URL", prompt)
-        self.assertIn(
-            "if it cannot be verified, leave the optional company_linkedin field empty",
-            prompt,
-        )
-        self.assertIn(
-            "employee_count_estimate from discovery or a stored profile as shortlist-only",
-            prompt,
-        )
-        self.assertIn("not current exact staff and cannot prove an employee band", prompt)
-        self.assertIn("Source a current public employee band before returning", prompt)
-        self.assertIn(
-            "Report the supported band, not a bucket boundary or LinkedIn profile count as exact staff",
-            prompt,
-        )
-        self.assertIn("In fit_summary, state only the supported employee band", prompt)
+        self.assertIn("Stored LinkedIn URLs are unverified", prompt)
+        self.assertIn("canonical company URL from a current page", prompt)
+        self.assertIn("leave company_linkedin empty", prompt)
+        self.assertIn("Employee estimates from discovery/profile are shortlist clues", prompt)
+        self.assertIn("not bands or current exact staff", prompt)
+        self.assertIn("Verify a current public band", prompt)
+        self.assertIn("never infer it from an estimate", prompt)
+        self.assertIn("only the supported band", prompt)
+        self.assertIn("never an exact estimate", prompt)
 
     def test_expansion_uses_original_event_and_separates_planned_entry(self) -> None:
         icp = {
@@ -321,17 +388,11 @@ class HarnessContractTests(unittest.TestCase):
         }
         prompt = build_prompt(icp)
         self.assertIn("annual report or announcement index", prompt)
-        self.assertIn("fetch the original dated announcement, not just the summary", prompt)
-        self.assertIn("distinguish a completed entry from a non-binding MoU or a plan", prompt)
+        self.assertIn("fetch the original dated announcement", prompt)
+        self.assertIn("completed entry into a new geography", prompt)
+        self.assertIn("non-binding MoU, plan, or added facility, asset", prompt)
+        self.assertIn("capacity in an existing market is insufficient", prompt)
         self.assertIn("Verify each country separately", prompt)
-        self.assertIn(
-            "Require source proof of entry into a new geography, customer market, or distinct commercial segment",
-            prompt,
-        )
-        self.assertIn(
-            "another facility, asset, or capacity increase in an existing market is insufficient",
-            prompt,
-        )
         self.assertIn("unless the source explicitly connects it", prompt)
         icp["intent_category"] = "FUNDING"
         self.assertNotIn("Verify each country separately", build_prompt(icp))
@@ -356,10 +417,10 @@ class HarnessContractTests(unittest.TestCase):
             "intent_max_age_days": 365,
         }
         prompt = build_prompt(icp)
-        self.assertIn("actually granted to this company or product and its date", prompt)
-        self.assertIn("do not invent one or require an undisclosed auditor's name", prompt)
+        self.assertIn("actually granted to this company or product", prompt)
+        self.assertIn("do not invent or require an undisclosed auditor", prompt)
         self.assertIn("A marketplace listing, partner badge", prompt)
-        self.assertIn("check the latest funding or ownership status", prompt)
+        self.assertIn("latest funding/ownership", prompt)
         icp["intent_category"] = "FUNDING"
         self.assertNotIn("A marketplace listing, partner badge", build_prompt(icp))
 
@@ -373,20 +434,20 @@ class HarnessContractTests(unittest.TestCase):
         prompt = build_prompt(icp)
 
         self.assertIn(
-            "job responsibilities directly match the requested function",
+            "job responsibilities must directly match the requested function",
             prompt,
         )
         self.assertIn(
-            "shared words such as systems or platform are insufficient",
+            "Shared words such as systems or platform",
             prompt,
         )
         self.assertIn(
-            "Do not treat generic hiring or an adjacent function",
+            "generic hiring, or an adjacent function are insufficient",
             prompt,
         )
         icp["intent_category"] = "FUNDING"
         self.assertNotIn(
-            "job responsibilities directly match the requested function",
+            "job responsibilities must directly match the requested function",
             build_prompt(icp),
         )
 
