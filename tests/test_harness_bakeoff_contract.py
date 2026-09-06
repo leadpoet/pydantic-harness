@@ -455,6 +455,7 @@ class HarnessContractTests(unittest.TestCase):
     def test_event_date_and_current_hiring_source_guidance(self) -> None:
         icp = {
             "icp_id": "test-current-hiring",
+            "company_stage": "Series A",
             "intent_signal": "Actively hiring integration engineers",
             "intent_category": "HIRING",
             "intent_max_age_days": 365,
@@ -470,6 +471,8 @@ class HarnessContractTests(unittest.TestCase):
         self.assertIn("not a later article publication date", prompt)
         self.assertIn("neutral company-name latest-funding/ownership lookup", prompt)
         self.assertIn("without the requested stage", prompt)
+        icp["company_stage"] = ""
+        self.assertNotIn("neutral company-name", build_prompt(icp))
 
     def test_hiring_guidance_requires_direct_function_match(self) -> None:
         icp = {
