@@ -209,6 +209,28 @@ def test_company_profile_includes_bounded_latest_financing_context() -> None:
     }
 
 
+def test_company_profile_labels_numeric_employee_count_as_stored_estimate() -> None:
+    source_row = {
+        "domain": "example.com",
+        "company_name": "Example",
+        "employee_count": 45,
+    }
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        data = {"rows": [source_row]} if request.url.path.endswith(
+            "/free_simple_company_search/execute"
+        ) else {"data": []}
+        return httpx.Response(200, request=request, json={"result": {"data": data}})
+
+    profile = ArenaToolClient(
+        client=httpx.Client(transport=httpx.MockTransport(handle))
+    ).get_company_profile({"domain": "example.com"})
+
+    assert profile["company"]["employee_count_estimate"] == 45
+    assert "employee_count" not in profile["company"]
+    assert source_row["employee_count"] == 45
+
+
 def test_company_profile_preserves_firmographics_when_financing_fails() -> None:
     def handle(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/free_simple_company_search/execute"):
@@ -307,6 +329,73 @@ def test_search_companies_normalizes_only_hunter_headcount_filter() -> None:
     ]
     assert employee_count[0] == "2-10"
     assert result["companies"][0]["employee_count"] == "2-10"
+
+
+def test_search_companies_preserves_bands_and_labels_numeric_counts() -> None:
+    source_rows = [
+        {
+            "organization": "Numeric",
+            "domain": "numeric.example",
+            "employee_count": "11-50",
+            "headcount": 45.0,
+        },
+        {
+            "organization": "Comma",
+            "domain": "comma.example",
+            "employee_count": "1,453",
+        },
+        {
+            "organization": "Decimal",
+            "domain": "decimal.example",
+            "employee_count": "45.0",
+        },
+        {
+            "organization": "Band",
+            "domain": "band.example",
+            "employee_count": "51-200",
+        },
+        {
+            "organization": "Boolean",
+            "domain": "boolean.example",
+            "employee_count": True,
+        },
+        {
+            "organization": "Unknown",
+            "domain": "unknown.example",
+            "employee_count": None,
+        },
+    ]
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            json={"result": {"data": {"data": source_rows}}},
+        )
+
+    result = ArenaToolClient(
+        client=httpx.Client(transport=httpx.MockTransport(handle))
+    ).search_companies({"query": "software", "limit": 6})
+
+    companies = result["companies"]
+    assert companies[0]["employee_count_estimate"] == 45.0
+    assert companies[1]["employee_count_estimate"] == "1,453"
+    assert companies[2]["employee_count_estimate"] == "45.0"
+    assert companies[3]["employee_count"] == "51-200"
+    assert "employee_count" not in companies[0]
+    assert "employee_count_estimate" not in companies[3]
+    for company in companies[4:]:
+        assert "employee_count" not in company
+        assert "employee_count_estimate" not in company
+    assert source_rows[0]["employee_count"] == "11-50"
+    assert source_rows[0]["headcount"] == 45.0
+    assert [row["employee_count"] for row in source_rows[1:]] == [
+        "1,453",
+        "45.0",
+        "51-200",
+        True,
+        None,
+    ]
 
 
 def test_fetch_page_requests_fresh_content_and_preserves_successful_url() -> None:

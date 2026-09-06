@@ -301,10 +301,15 @@ class HarnessContractTests(unittest.TestCase):
             prompt,
         )
         self.assertIn(
-            "Do not present a database headcount estimate or bucket boundary as a verified exact staff total",
+            "employee_count_estimate from discovery or a stored profile as shortlist-only",
             prompt,
         )
-        self.assertIn("report only the supported employee band", prompt)
+        self.assertIn("not current exact staff and cannot prove an employee band", prompt)
+        self.assertIn("Source a current public employee band before returning", prompt)
+        self.assertIn(
+            "Report the supported band, not a bucket boundary or LinkedIn profile count as exact staff",
+            prompt,
+        )
 
     def test_expansion_uses_original_event_and_separates_planned_entry(self) -> None:
         icp = {

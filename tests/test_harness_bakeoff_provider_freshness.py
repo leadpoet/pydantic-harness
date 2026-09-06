@@ -114,6 +114,68 @@ class ProviderFreshnessTests(unittest.TestCase):
             ["1-10", "501-1000"],
         )
 
+    def test_standalone_discovery_labels_only_numeric_counts_as_estimates(self) -> None:
+        tools = self._tools()
+        source_rows = [
+            {
+                "organization": "Numeric",
+                "domain": "numeric.example",
+                "headcount": 13.0,
+            },
+            {
+                "organization": "Numeric string",
+                "domain": "string.example",
+                "employee_count": "200",
+            },
+            {
+                "organization": "Comma",
+                "domain": "comma.example",
+                "employee_count": "1,453",
+            },
+            {
+                "organization": "Decimal",
+                "domain": "decimal.example",
+                "employee_count": "45.0",
+            },
+            {
+                "organization": "Band",
+                "domain": "band.example",
+                "employee_count": "11-50",
+            },
+            {
+                "organization": "Unknown",
+                "domain": "unknown.example",
+                "employee_count": None,
+            },
+        ]
+
+        with patch.object(
+            tools,
+            "_deepline",
+            return_value={"data": {"data": source_rows}},
+        ):
+            result = tools.search_companies({"query": "software", "limit": 6})
+
+        companies = result["companies"]
+        self.assertEqual(companies[0]["employee_count_estimate"], 13.0)
+        self.assertEqual(companies[1]["employee_count_estimate"], "200")
+        self.assertEqual(companies[2]["employee_count_estimate"], "1,453")
+        self.assertEqual(companies[3]["employee_count_estimate"], "45.0")
+        self.assertEqual(companies[4]["employee_count"], "11-50")
+        self.assertNotIn("employee_count", companies[0])
+        self.assertNotIn("employee_count_estimate", companies[4])
+        self.assertNotIn("employee_count", companies[5])
+        self.assertNotIn("employee_count_estimate", companies[5])
+        self.assertEqual(
+            [
+                row["employee_count"]
+                if "employee_count" in row
+                else row["headcount"]
+                for row in source_rows
+            ],
+            [13.0, "200", "1,453", "45.0", "11-50", None],
+        )
+
     def test_standalone_profile_includes_latest_financing_context(self) -> None:
         tools = self._tools()
 
@@ -180,6 +242,33 @@ class ProviderFreshnessTests(unittest.TestCase):
             deepline.call_args_list[1].kwargs["fallback_cost"],
             0.004,
         )
+
+    def test_standalone_profile_labels_numeric_count_and_ignores_boolean(self) -> None:
+        for value, expected in ((45, 45), (True, None)):
+            with self.subTest(value=value):
+                tools = self._tools()
+                source_row = {
+                    "domain": "example.com",
+                    "company_name": "Example",
+                    "employee_count": value,
+                }
+
+                def execute(tool, _payload, **_kwargs):
+                    if tool == "free_simple_company_search":
+                        return {"data": {"rows": [source_row]}}
+                    return {"data": {"data": []}}
+
+                with patch.object(tools, "_deepline", side_effect=execute):
+                    profile = tools.get_company_profile({"domain": "example.com"})
+
+                if expected is None:
+                    self.assertNotIn("employee_count_estimate", profile["company"])
+                else:
+                    self.assertEqual(
+                        profile["company"]["employee_count_estimate"], expected
+                    )
+                self.assertNotIn("employee_count", profile["company"])
+                self.assertIs(source_row["employee_count"], value)
 
     def test_standalone_profile_surfaces_financing_failure(self) -> None:
         tools = self._tools()

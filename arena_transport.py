@@ -103,6 +103,9 @@ _HUNTER_HEADCOUNT_BANDS = frozenset(
         "10001+",
     }
 )
+_STORED_EMPLOYEE_COUNT_RE = re.compile(
+    r"(?:[0-9]+(?:\.[0-9]+)?|[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?)"
+)
 
 
 def arena_socket_path() -> str:
@@ -270,6 +273,21 @@ def _json_safe(value: Any, *, depth: int = 0) -> Any:
             if str(key).lower() not in {"api_key", "apikey", "authorization", "token"}
         }
     return str(value)[:2_000]
+
+
+def _project_employee_count(company: dict[str, Any], value: Any) -> None:
+    """Keep stored numeric headcounts distinct from supported public bands."""
+
+    company.pop("employee_count", None)
+    company.pop("employee_count_estimate", None)
+    if value in (None, "", [], {}) or isinstance(value, bool):
+        return
+    numeric = isinstance(value, (int, float)) or (
+        isinstance(value, str)
+        and _STORED_EMPLOYEE_COUNT_RE.fullmatch(value.strip()) is not None
+    )
+    field = "employee_count_estimate" if numeric else "employee_count"
+    company[field] = _json_safe(value)
 
 
 def _hunter_locations(value: str) -> list[dict[str, str]]:
@@ -508,11 +526,12 @@ class ArenaToolClient:
                 ("linkedin_url", "company_linkedin"),
                 ("industry", "industry"),
                 ("location", "location"),
-                ("employee_count", "employee_count"),
-                ("headcount", "employee_count"),
             ):
                 if row.get(source) not in (None, "", [], {}):
                     company[target] = _json_safe(row[source])
+            for source in ("employee_count", "headcount"):
+                if row.get(source) not in (None, "", [], {}):
+                    _project_employee_count(company, row[source])
             if domain:
                 company["company_website"] = f"https://{domain}/"
             companies.append(company)
@@ -549,9 +568,11 @@ class ArenaToolClient:
         financing = self.get_company_events(
             {"domain": domain, "categories": ["FUNDING"], "limit": 3}
         )
+        company = dict(exact) if isinstance(exact, dict) else {}
+        _project_employee_count(company, company.get("employee_count"))
         return {
             "domain": domain,
-            "company": exact if isinstance(exact, dict) else {},
+            "company": company,
             "latest_financing_events": financing["events"],
             "errors": financing["errors"],
         }
