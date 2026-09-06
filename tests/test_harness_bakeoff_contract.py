@@ -262,6 +262,21 @@ class HarnessContractTests(unittest.TestCase):
         self.assertIn("current majority or controlling private-equity ownership", prompt)
         self.assertIn("not merely a strategic investment", prompt)
 
+    def test_named_candidate_empty_site_search_uses_existing_alternate(self) -> None:
+        prompt = build_prompt({"icp_id": "named-candidate-fallback"})
+
+        self.assertIn(
+            "search_web query restricted by a site: filter for an already named candidate",
+            prompt,
+        )
+        self.assertIn("candidate returns no results", prompt)
+        self.assertIn("replace a near-repeat", prompt)
+        self.assertIn("one allowed alternate without a site: filter", prompt)
+        self.assertIn("this is not an extra call", prompt)
+        self.assertIn("verify the company profile and fetch the best page", prompt)
+        self.assertIn("before abandoning the candidate", prompt)
+        self.assertIn("a planned or future event does not qualify", prompt)
+
     def test_prompt_does_not_trust_stored_linkedin_url(self) -> None:
         prompt = build_prompt({"icp_id": "today"})
 
