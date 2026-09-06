@@ -110,6 +110,66 @@ def test_arena_transport_uses_credential_free_approved_routes() -> None:
     assert not any("api_key" in request.url.params for request in requests)
 
 
+def test_search_companies_normalizes_only_hunter_headcount_filter() -> None:
+    requests: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "result": {
+                    "data": {
+                        "data": [
+                            {
+                                "organization": "Example",
+                                "domain": "example.com",
+                                "employee_count": "2-10",
+                            }
+                        ]
+                    }
+                }
+            },
+        )
+
+    tools = ArenaToolClient(
+        client=httpx.Client(transport=httpx.MockTransport(handle))
+    )
+    employee_count = [
+        "2-10",
+        "11-50",
+        "51-200",
+        "201-500",
+        "501-1,000",
+        "1,001-5,000",
+        "5,001-10,000",
+        "10,001+",
+        "unknown",
+    ]
+
+    result = tools.search_companies(
+        {
+            "query": "software",
+            "employee_count": employee_count,
+            "limit": 1,
+        }
+    )
+
+    assert json.loads(requests[0].content)["payload"]["headcount"] == [
+        "1-10",
+        "11-50",
+        "51-200",
+        "201-500",
+        "501-1000",
+        "1001-5000",
+        "5001-10000",
+        "10001+",
+    ]
+    assert employee_count[0] == "2-10"
+    assert result["companies"][0]["employee_count"] == "2-10"
+
+
 def test_fetch_page_requests_fresh_content_and_preserves_successful_url() -> None:
     requests: list[httpx.Request] = []
     evidence_text = "x" * 300

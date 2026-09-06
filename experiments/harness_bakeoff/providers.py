@@ -62,6 +62,18 @@ _US_REGIONS = {
     "northeast": ("CT", "ME", "MA", "NH", "NJ", "NY", "PA", "RI", "VT"),
     "midwest": ("IA", "IL", "IN", "KS", "MI", "MN", "MO", "ND", "NE", "OH", "SD", "WI"),
 }
+_HUNTER_HEADCOUNT_BANDS = frozenset(
+    {
+        "1-10",
+        "11-50",
+        "51-200",
+        "201-500",
+        "501-1000",
+        "1001-5000",
+        "5001-10000",
+        "10001+",
+    }
+)
 _SUBPROCESS_ENV_KEYS = {
     "PATH",
     "HOME",
@@ -367,6 +379,24 @@ def _hunter_locations(value: str) -> list[dict[str, str]]:
     return []
 
 
+def _hunter_headcount_bands(values: Any) -> list[str]:
+    bands = values if isinstance(values, list) else [values]
+    normalized: list[str] = []
+    for value in bands:
+        band = (
+            str(value or "")
+            .strip()
+            .replace(",", "")
+            .replace("–", "-")
+            .replace("—", "-")
+        )
+        if band == "2-10":
+            band = "1-10"
+        if band in _HUNTER_HEADCOUNT_BANDS and band not in normalized:
+            normalized.append(band)
+    return normalized
+
+
 def _sql_literal(value: Any) -> str:
     text = re.sub(r"[\x00-\x1f\x7f]", " ", str(value or ""))[:200]
     return "'" + text.replace("'", "''") + "'"
@@ -651,12 +681,7 @@ class LiveProviderTools:
         limit = max(1, min(int(arguments.get("limit") or 5), 6))
         industry = str(arguments.get("industry") or "").strip()
         geography = str(arguments.get("geography") or "").strip()
-        bands = arguments.get("employee_count") or []
-        if not isinstance(bands, list):
-            bands = [bands]
-        headcount = [
-            str(value).replace(",", "").strip() for value in bands if str(value).strip()
-        ]
+        headcount = _hunter_headcount_bands(arguments.get("employee_count") or [])
         context = ". ".join(
             part
             for part in (

@@ -89,6 +89,30 @@ class ProviderFreshnessTests(unittest.TestCase):
             with patch.object(providers, "datetime", FixedDateTime):
                 self.assertEqual(providers._evaluation_day(), fixed_utc_day)
 
+    def test_standalone_discovery_uses_hunter_headcount_bands(self) -> None:
+        tools = self._tools()
+
+        with patch.object(
+            tools,
+            "_deepline",
+            return_value={"data": {"data": []}},
+        ) as deepline:
+            tools.search_companies(
+                {
+                    "query": "software",
+                    "employee_count": [
+                        "2-10",
+                        "501–1,000",
+                        "not-a-band",
+                    ],
+                }
+            )
+
+        self.assertEqual(
+            deepline.call_args.args[1]["headcount"],
+            ["1-10", "501-1000"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
