@@ -19,11 +19,25 @@ from experiments.harness_bakeoff.models import (
     validate_companies,
 )
 from experiments.harness_bakeoff.prompt import build_prompt
+from experiments.harness_bakeoff.tool_contract import (
+    PREDICTLEADS_JOB_CATEGORIES,
+    tool_input_schema,
+)
 from experiments.harness_bakeoff import worker
 from experiments.harness_bakeoff.worker import MODULES
 
 
 class HarnessContractTests(unittest.TestCase):
+    def test_company_events_exposes_only_provider_native_job_filter(self) -> None:
+        schema = tool_input_schema("get_company_events")
+
+        self.assertNotIn("query", schema["properties"])
+        self.assertEqual(
+            schema["properties"]["job_categories"]["items"]["enum"],
+            list(PREDICTLEADS_JOB_CATEGORIES),
+        )
+        self.assertFalse(schema["additionalProperties"])
+
     def test_selected_harness_exposes_run_icp(self) -> None:
         for arm, module_name in MODULES.items():
             with self.subTest(arm=arm):

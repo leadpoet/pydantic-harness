@@ -92,6 +92,9 @@ The return value is a JSON list, or `[]` when no company can be verified:
 
 The harness can use these tools: `search_companies`, `get_company_profile`,
 `get_company_events`, `search_web`, `fetch_page`, and `submit_companies`.
+For `HIRING` or `JOBS` event lookups, `get_company_events` accepts optional
+PredictLeads `job_categories` and returns a bounded plain-text job description
+when the provider supplies one.
 In the Arena, reasoning uses OpenRouter and research uses Deepline, including
 Exa search and page contents through Deepline. No separate Exa or ScrapingDog
 key is required for this native path. The standalone tools below remain separate.

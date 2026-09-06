@@ -25,12 +25,19 @@ import httpx
 import trafilatura
 
 from .models import validate_companies
+from .tool_contract import validate_job_categories
 
 
 _URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 _MAX_TOOL_RESPONSE_BYTES = 6_000
 _MAX_PAGE_TEXT_CHARS = 2_500
+_MAX_JOB_DESCRIPTION_CHARS = 1_000
+_MAX_JOB_DESCRIPTION_SOURCE_CHARS = 20_000
 _SCRAPINGDOG_REQUEST_USD = 0.001
+_HTML_BLOCK_RE = re.compile(
+    r"<(script|style)\b[^>]*>.*?</\1\s*>", re.IGNORECASE | re.DOTALL
+)
+_HTML_TAG_RE = re.compile(r"<[^>]*>")
 _EVENT_TOOLS = {
     "HIRING": "predictleads_company_job_openings",
     "JOBS": "predictleads_company_job_openings",
@@ -208,6 +215,18 @@ def _result_data(payload: Any) -> dict[str, Any]:
     return data if isinstance(data, dict) else payload
 
 
+def _job_description_excerpt(value: Any) -> str | None:
+    """Return bounded plain text from an untrusted provider description."""
+
+    if not isinstance(value, str):
+        return None
+    text = html.unescape(value[:_MAX_JOB_DESCRIPTION_SOURCE_CHARS])
+    text = _HTML_BLOCK_RE.sub(" ", text)
+    text = _HTML_TAG_RE.sub(" ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:_MAX_JOB_DESCRIPTION_CHARS] or None
+
+
 def _project_event_data(payload: dict[str, Any], limit: int) -> dict[str, Any]:
     """Keep only sales-research fields from verbose PredictLeads envelopes."""
     included: dict[tuple[str, str], dict[str, Any]] = {}
@@ -267,13 +286,19 @@ def _project_event_data(payload: dict[str, Any], limit: int) -> dict[str, Any]:
         if not isinstance(raw, dict):
             continue
         attrs = raw.get("attributes") if isinstance(raw.get("attributes"), dict) else {}
+        event_type = str(raw.get("type") or "event")
+        projected_attributes = {
+            key: _json_safe(value)
+            for key, value in attrs.items()
+            if key in attribute_names and value not in (None, "", [], {})
+        }
+        if event_type == "job_opening":
+            projected_attributes["description"] = _job_description_excerpt(
+                attrs.get("description")
+            )
         item: dict[str, Any] = {
-            "type": str(raw.get("type") or "event"),
-            "attributes": {
-                key: _json_safe(value)
-                for key, value in attrs.items()
-                if key in attribute_names and value not in (None, "", [], {})
-            },
+            "type": event_type,
+            "attributes": projected_attributes,
         }
         relations = (
             raw.get("relationships")
@@ -810,6 +835,7 @@ class LiveProviderTools:
 
     def get_company_events(self, arguments: dict[str, Any]) -> dict[str, Any]:
         domain = _host_from_domain(str(arguments.get("domain") or ""))
+        job_categories = validate_job_categories(arguments.get("job_categories"))
         categories = arguments.get("categories") or ["NEWS", "HIRING", "FUNDING"]
         if not isinstance(categories, list):
             categories = [categories]
@@ -833,6 +859,8 @@ class LiveProviderTools:
             payload = {"company_id_or_domain": domain, "page": 1, "limit": limit}
             if tool == "predictleads_company_job_openings":
                 payload.update({"active_only": True, "not_closed": True})
+                if job_categories:
+                    payload["categories"] = job_categories
             elif tool == "predictleads_company_news_events":
                 news_categories: list[str] = []
                 for category in categories:

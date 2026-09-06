@@ -8,6 +8,7 @@ credentials and enforces its own call, cost, token, and time limits.
 from __future__ import annotations
 
 from datetime import date, timedelta
+import html
 import json
 import os
 import re
@@ -17,6 +18,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from experiments.harness_bakeoff.models import _public_http_url, validate_companies
+from experiments.harness_bakeoff.tool_contract import validate_job_categories
 
 
 _ALLOWED_ARENA_HEADERS = frozenset(
@@ -106,6 +108,12 @@ _HUNTER_HEADCOUNT_BANDS = frozenset(
 _STORED_EMPLOYEE_COUNT_RE = re.compile(
     r"(?:[0-9]+(?:\.[0-9]+)?|[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?)"
 )
+_MAX_JOB_DESCRIPTION_CHARS = 1_000
+_MAX_JOB_DESCRIPTION_SOURCE_CHARS = 20_000
+_HTML_BLOCK_RE = re.compile(
+    r"<(script|style)\b[^>]*>.*?</\1\s*>", re.IGNORECASE | re.DOTALL
+)
+_HTML_TAG_RE = re.compile(r"<[^>]*>")
 
 
 def arena_socket_path() -> str:
@@ -322,6 +330,18 @@ def _hunter_headcount_bands(values: Any) -> list[str]:
     return normalized
 
 
+def _job_description_excerpt(value: Any) -> str | None:
+    """Return bounded plain text from an untrusted provider description."""
+
+    if not isinstance(value, str):
+        return None
+    text = html.unescape(value[:_MAX_JOB_DESCRIPTION_SOURCE_CHARS])
+    text = _HTML_BLOCK_RE.sub(" ", text)
+    text = _HTML_TAG_RE.sub(" ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:_MAX_JOB_DESCRIPTION_CHARS] or None
+
+
 def _project_event_data(payload: dict[str, Any], limit: int) -> dict[str, Any]:
     included: dict[tuple[str, str], dict[str, Any]] = {}
     for raw in payload.get("included") or []:
@@ -380,13 +400,19 @@ def _project_event_data(payload: dict[str, Any], limit: int) -> dict[str, Any]:
         if not isinstance(raw, dict):
             continue
         attrs = raw.get("attributes") if isinstance(raw.get("attributes"), dict) else {}
+        event_type = str(raw.get("type") or "event")
+        projected_attributes = {
+            key: _json_safe(value)
+            for key, value in attrs.items()
+            if key in attribute_names and value not in (None, "", [], {})
+        }
+        if event_type == "job_opening":
+            projected_attributes["description"] = _job_description_excerpt(
+                attrs.get("description")
+            )
         item: dict[str, Any] = {
-            "type": str(raw.get("type") or "event"),
-            "attributes": {
-                key: _json_safe(value)
-                for key, value in attrs.items()
-                if key in attribute_names and value not in (None, "", [], {})
-            },
+            "type": event_type,
+            "attributes": projected_attributes,
         }
         relations = raw.get("relationships") if isinstance(raw.get("relationships"), dict) else {}
         related: dict[str, Any] = {}
@@ -581,6 +607,7 @@ class ArenaToolClient:
         domain = _domain(arguments.get("domain"))
         if not domain:
             raise ValueError("domain is required")
+        job_categories = validate_job_categories(arguments.get("job_categories"))
         categories = arguments.get("categories") or ["NEWS", "HIRING", "FUNDING"]
         if not isinstance(categories, list):
             categories = [categories]
@@ -607,6 +634,8 @@ class ArenaToolClient:
             }
             if tool == "predictleads_company_job_openings":
                 request.update({"active_only": True, "not_closed": True})
+                if job_categories:
+                    request["categories"] = job_categories
             elif tool == "predictleads_company_news_events":
                 news_categories: list[str] = []
                 for category in categories:

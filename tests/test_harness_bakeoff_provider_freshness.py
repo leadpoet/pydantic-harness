@@ -328,6 +328,81 @@ class ProviderFreshnessTests(unittest.TestCase):
         )
         self.assertEqual(tools.stats.estimated_cost_usd, 0.004)
 
+    def test_standalone_company_events_matches_job_filter_and_description_contract(self) -> None:
+        tools = self._tools()
+        event = {
+            "type": "job_opening",
+            "attributes": {
+                "title": "Revenue Operations Lead",
+                "description": "<b>Own</b> revenue systems &amp; reporting." + (" x" * 600),
+                "url": "https://jobs.example.com/revenue-operations",
+                "posted_at": "2026-09-02T10:00:00Z",
+                "first_seen_at": "2026-09-02T10:01:00Z",
+                "last_seen_at": "2026-09-05T10:00:00Z",
+                "status": "open",
+            },
+        }
+
+        with patch.object(
+            tools, "_deepline", return_value={"data": {"data": [event]}}
+        ) as deepline:
+            result = tools.get_company_events(
+                {
+                    "domain": "example.com",
+                    "categories": ["HIRING"],
+                    "job_categories": ["operations", "sales"],
+                }
+            )
+
+        self.assertEqual(
+            deepline.call_args.args,
+            (
+                "predictleads_company_job_openings",
+                {
+                    "company_id_or_domain": "example.com",
+                    "page": 1,
+                    "limit": 5,
+                    "active_only": True,
+                    "not_closed": True,
+                    "categories": ["operations", "sales"],
+                },
+            ),
+        )
+        attributes = result["events"][0]["data"]["items"][0]["attributes"]
+        self.assertEqual(len(attributes["description"]), 1_000)
+        self.assertTrue(attributes["description"].startswith("Own revenue systems"))
+        self.assertNotIn("<", attributes["description"])
+        self.assertEqual(attributes["url"], event["attributes"]["url"])
+        self.assertEqual(attributes["posted_at"], event["attributes"]["posted_at"])
+        self.assertEqual(
+            attributes["first_seen_at"], event["attributes"]["first_seen_at"]
+        )
+        self.assertEqual(attributes["last_seen_at"], event["attributes"]["last_seen_at"])
+        self.assertEqual(attributes["status"], "open")
+
+    def test_standalone_company_events_omits_and_validates_job_filter(self) -> None:
+        tools = self._tools()
+        with patch.object(
+            tools, "_deepline", return_value={"data": {"data": []}}
+        ) as deepline:
+            tools.get_company_events(
+                {"domain": "example.com", "categories": ["HIRING"]}
+            )
+        self.assertNotIn("categories", deepline.call_args.args[1])
+
+        for malformed in ("sales", ["not_a_provider_category"], ["sales"] * 21):
+            with self.subTest(malformed=malformed):
+                with patch.object(tools, "_deepline") as deepline:
+                    with self.assertRaisesRegex(ValueError, "job_categories"):
+                        tools.get_company_events(
+                            {
+                                "domain": "example.com",
+                                "categories": ["HIRING"],
+                                "job_categories": malformed,
+                            }
+                        )
+                    deepline.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

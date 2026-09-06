@@ -383,17 +383,17 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
     def get_company_events(
         domain: str,
         categories: list[str] = [],
-        query: str = "",
+        job_categories: list[str] = [],
         limit: int = 5,
     ) -> Any:
-        """Find live company events such as jobs or financing for one domain."""
+        """Find events, optionally filtering jobs by coarse provider categories."""
 
         return budget.call(
             "get_company_events",
             {
                 "domain": domain,
                 "categories": categories,
-                "query": query,
+                "job_categories": job_categories,
                 "limit": limit,
             },
         )
