@@ -438,6 +438,20 @@ class HarnessContractTests(unittest.TestCase):
         icp["intent_category"] = "FUNDING"
         self.assertNotIn("A marketplace listing, partner badge", build_prompt(icp))
 
+    def test_funding_guidance_distinguishes_company_and_investment_vehicle(self) -> None:
+        icp = {
+            "icp_id": "test-funding",
+            "intent_signal": "Announced a funding round",
+            "intent_category": "FUNDING",
+            "intent_max_age_days": 365,
+        }
+        prompt = build_prompt(icp)
+        self.assertIn("capital raised by the target company itself", prompt)
+        self.assertIn("LP commitments, assets under management", prompt)
+        self.assertIn("unless the ICP explicitly requests those events", prompt)
+        icp["intent_category"] = "HIRING"
+        self.assertNotIn("capital raised by the target company itself", build_prompt(icp))
+
     def test_hiring_guidance_requires_direct_function_match(self) -> None:
         icp = {
             "icp_id": "test-hiring",

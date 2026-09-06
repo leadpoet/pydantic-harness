@@ -82,6 +82,13 @@ def build_prompt(icp: dict[str, Any], max_companies: int | None = None) -> str:
         if primary.get("category") == "MARKET_EXPANSION"
         else ""
     )
+    funding_guidance = (
+        "- Funding: verify capital raised by the target company itself. An investment fund close, "
+        "LP commitments, assets under management, or loans the company makes to customers are not "
+        "a company funding round unless the ICP explicitly requests those events.\n"
+        if primary.get("category") == "FUNDING"
+        else ""
+    )
     raw_day = (
         os.environ.get("BAKEOFF_EVALUATION_DATE")
         or os.environ.get("LAB_ARENA_EVALUATION_DATE")
@@ -104,6 +111,7 @@ def build_prompt(icp: dict[str, Any], max_companies: int | None = None) -> str:
         f"{certification_guidance}"
         f"{hiring_guidance}"
         f"{expansion_guidance}"
+        f"{funding_guidance}"
         "- Verify required industry, company-HQ geography, current employee band, stage, attribute, and "
         "other stated fit requirements from public evidence; omit missing or conflicting required facts. "
         "An office, facility, job, or served market is not HQ.\n"
