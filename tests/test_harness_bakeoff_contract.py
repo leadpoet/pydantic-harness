@@ -260,6 +260,19 @@ class HarnessContractTests(unittest.TestCase):
         self.assertIn("not the seller's offering or what the target wants to buy", prompt)
         self.assertIn("verified event's effect on the target's actual operations or growth", prompt)
 
+    def test_prompt_does_not_trust_stored_linkedin_url(self) -> None:
+        prompt = build_prompt({"icp_id": "today"})
+
+        self.assertIn(
+            "stored profile's LinkedIn URL as an unverified candidate",
+            prompt,
+        )
+        self.assertIn("Use current page evidence for the canonical company URL", prompt)
+        self.assertIn(
+            "if it cannot be verified, leave the optional company_linkedin field empty",
+            prompt,
+        )
+
     def test_output_schema_guides_stage_without_narrowing_host_contract(self) -> None:
         schema = company_list_json_schema()["items"]
 
