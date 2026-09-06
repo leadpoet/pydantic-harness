@@ -278,6 +278,21 @@ class HarnessContractTests(unittest.TestCase):
         )
         self.assertIn("report only the supported employee band", prompt)
 
+    def test_expansion_uses_original_event_and_separates_planned_entry(self) -> None:
+        icp = {
+            "icp_id": "test-expansion",
+            "intent_signal": "Entered a new operating market",
+            "intent_category": "MARKET_EXPANSION",
+            "intent_max_age_days": 365,
+        }
+        prompt = build_prompt(icp)
+        self.assertIn("annual report or announcement index", prompt)
+        self.assertIn("fetch the original dated announcement, not just the summary", prompt)
+        self.assertIn("distinguish a completed entry from a non-binding MoU or a plan", prompt)
+        self.assertIn("Verify each country separately", prompt)
+        icp["intent_category"] = "FUNDING"
+        self.assertNotIn("Verify each country separately", build_prompt(icp))
+
     def test_output_schema_guides_stage_without_narrowing_host_contract(self) -> None:
         schema = company_list_json_schema()["items"]
 

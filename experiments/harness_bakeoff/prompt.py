@@ -38,6 +38,12 @@ def build_prompt(icp: dict[str, Any], max_companies: int | None = None) -> str:
         if primary.get("category") == "HIRING"
         else ""
     )
+    expansion_guidance = (
+        "For market expansion, distinguish a completed entry from a non-binding MoU or a plan. "
+        "Verify each country separately; do not combine an actual entry with a planned one.\n"
+        if primary.get("category") == "MARKET_EXPANSION"
+        else ""
+    )
     raw_day = (
         os.environ.get("BAKEOFF_EVALUATION_DATE")
         or os.environ.get("LAB_ARENA_EVALUATION_DATE")
@@ -58,6 +64,7 @@ def build_prompt(icp: dict[str, Any], max_companies: int | None = None) -> str:
         f"- Required attribute: {required_attribute or 'not specified'}\n"
         f"{certification_guidance}"
         f"{hiring_guidance}"
+        f"{expansion_guidance}"
         "Verify the ICP industry, geography, employee band, stage, and required attribute; "
         "omit any company with a missing or conflicting required fact. If company_stage is "
         "required, check the latest funding or ownership status, not just a historical round matching "
@@ -97,8 +104,10 @@ def build_prompt(icp: dict[str, Any], max_companies: int | None = None) -> str:
         "evidence URL, "
         "with one alternate after a failed or unsupported page. Never repeat an equivalent query, "
         "domain lookup, or URL. Quote the fetched page's main article, not search snippets, navigation, "
-        "or related-article cards. If a related article contains the event, fetch that article and "
-        "use its own URL and date; never attach the surrounding page's date to a linked event. The signal date "
+        "or related-article cards. For an event summarized in an annual report or announcement index, "
+        "fetch the original dated announcement, not just the summary. If a related article contains "
+        "the event, fetch that article and use its own URL and date; never attach the surrounding "
+        "page's date to a linked event. The signal date "
         "must be the actual event or announcement date; never substitute a crawl, page-update, or search "
         "index date. Preserve event status: beta, preview, pilot, or a future announcement is not "
         "general availability. For an appointment, distinguish announcement from effective or start "
