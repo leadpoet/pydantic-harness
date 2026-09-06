@@ -31,6 +31,13 @@ def build_prompt(icp: dict[str, Any], max_companies: int | None = None) -> str:
         if primary.get("category") == "REGULATORY_CLEARANCE"
         else ""
     )
+    hiring_guidance = (
+        "For hiring intent, verify that the job responsibilities directly match the requested "
+        "function; shared words such as systems or platform are insufficient without matching "
+        "work. Do not treat generic hiring or an adjacent function as the requested hiring event.\n"
+        if primary.get("category") == "HIRING"
+        else ""
+    )
     raw_day = (
         os.environ.get("BAKEOFF_EVALUATION_DATE")
         or os.environ.get("LAB_ARENA_EVALUATION_DATE")
@@ -50,6 +57,7 @@ def build_prompt(icp: dict[str, Any], max_companies: int | None = None) -> str:
         f"- Company stage: {required_stage or 'not specified'}\n"
         f"- Required attribute: {required_attribute or 'not specified'}\n"
         f"{certification_guidance}"
+        f"{hiring_guidance}"
         "Verify the ICP industry, geography, employee band, stage, and required attribute; "
         "omit any company with a missing or conflicting required fact. If company_stage is "
         "required, check the latest funding or ownership status, not just a historical round matching "

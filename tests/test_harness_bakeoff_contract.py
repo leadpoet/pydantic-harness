@@ -285,6 +285,33 @@ class HarnessContractTests(unittest.TestCase):
         icp["intent_category"] = "FUNDING"
         self.assertNotIn("A marketplace listing, partner badge", build_prompt(icp))
 
+    def test_hiring_guidance_requires_direct_function_match(self) -> None:
+        icp = {
+            "icp_id": "test-hiring",
+            "intent_signal": "Hiring for integration roles",
+            "intent_category": "HIRING",
+            "intent_max_age_days": 365,
+        }
+        prompt = build_prompt(icp)
+
+        self.assertIn(
+            "job responsibilities directly match the requested function",
+            prompt,
+        )
+        self.assertIn(
+            "shared words such as systems or platform are insufficient",
+            prompt,
+        )
+        self.assertIn(
+            "Do not treat generic hiring or an adjacent function",
+            prompt,
+        )
+        icp["intent_category"] = "FUNDING"
+        self.assertNotIn(
+            "job responsibilities directly match the requested function",
+            build_prompt(icp),
+        )
+
     def test_output_canonicalizes_true_stage_and_employee_format_synonyms(self) -> None:
         base = {
             "company_name": "Example",
