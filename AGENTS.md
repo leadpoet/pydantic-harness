@@ -8,6 +8,11 @@ This repository contains one open-source PydanticAI harness for live B2B
 company sourcing. Keep it independent from competition-host deployment and
 persistence, and scoped to the public competition contract.
 
+`main` is for development and testing. Only the explicitly promoted `lab`
+branch supplies the daily Research Lab baseline. Do not promote to `lab`
+without user authorization. A promotion must not replace a running round's
+saved source or results.
+
 ## Simple competition boundary
 
 The fixed contract is only `run_icp(icp) -> list[dict]`, the documented input

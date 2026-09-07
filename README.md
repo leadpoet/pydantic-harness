@@ -9,6 +9,29 @@ reason and public evidence URLs.
 This repository contains no Research Lab deployment or persistence code. The
 competition host calls the stable function directly.
 
+## Development and promotion
+
+- `main` is the development and testing branch. A push to `main` does not
+  change the daily Research Lab baseline.
+- `lab` is the explicitly promoted baseline. Research Lab downloads this
+  branch when it freezes the baseline for a new rebenchmark.
+- A running round keeps its downloaded source, including after a restart.
+  Updating `lab` affects the next baseline snapshot, not saved results.
+
+After testing a selected `main` commit, promote it with an ordinary
+fast-forward push from a clean checkout:
+
+```bash
+git fetch origin
+git switch main
+git merge --ff-only origin/main
+git push origin HEAD:lab
+```
+
+Do not force-push either branch. Promotion needs no release manifest,
+attestation, or extra model-identity protocol. Miner forks still use the same
+input/output contract and can use any harness.
+
 ## Stable contract
 
 The public entrypoint is:
