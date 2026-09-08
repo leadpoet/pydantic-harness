@@ -150,6 +150,12 @@ class IntentSignal(BaseModel):
     url: str
     snippet: str = Field(min_length=1, max_length=600)
 
+    @field_validator("why_now", mode="before")
+    @classmethod
+    def normalize_why_now_spacing(cls, value: Any) -> Any:
+        """Keep the outreach explanation readable without changing its claims."""
+        return " ".join(value.split()) if isinstance(value, str) else value
+
     @field_validator("url")
     @classmethod
     def validate_url(cls, value: str) -> str:
