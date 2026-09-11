@@ -221,6 +221,25 @@ def _domain(value: Any) -> str:
     return host
 
 
+def _canonical_linkedin_person_url(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlsplit(raw if "://" in raw else "https://" + raw)
+    except ValueError:
+        return ""
+    host = (parsed.hostname or "").lower().rstrip(".")
+    parts = [part for part in parsed.path.split("/") if part]
+    if (
+        host not in {"linkedin.com", "www.linkedin.com"}
+        or len(parts) != 2
+        or parts[0].lower() != "in"
+    ):
+        return ""
+    return f"https://www.linkedin.com/in/{parts[1]}/"
+
+
 def _sql_literal(value: str) -> str:
     clean = re.sub(r"[\x00-\x1f\x7f]", " ", value)[:253]
     return "'" + clean.replace("'", "''") + "'"
@@ -484,6 +503,7 @@ class ArenaToolClient:
 
     def __init__(self, timeout: float = 90.0, client: httpx.Client | None = None):
         self.timeout = max(1.0, min(float(timeout), 120.0))
+        self.allow_contacts = False
         self._owns_client = client is None
         self._client = client or httpx.Client(
             transport=httpx.HTTPTransport(uds=arena_socket_path()),
@@ -534,6 +554,44 @@ class ArenaToolClient:
             f"http://code.deepline.com/api/v2/integrations/{tool}/execute",
             body={"payload": payload},
         )
+
+    def _contact_provider(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if tool == "harvestapi_get_profile":
+            if set(arguments) != {"url", "findEmail"}:
+                raise ValueError("contact profile arguments are invalid")
+            canonical_url = _canonical_linkedin_person_url(arguments.get("url"))
+            if not canonical_url:
+                raise ValueError("contact profile URL is invalid")
+            if arguments.get("findEmail") != "true":
+                raise ValueError("contact profile email lookup is required")
+            arguments = {"url": canonical_url, "findEmail": "true"}
+        elif tool == "harvestapi_search_leads":
+            allowed = {
+                "currentCompanies",
+                "currentJobTitles",
+                "locations",
+                "page",
+                "search",
+            }
+            if (
+                set(arguments) - allowed
+                or not str(arguments.get("currentJobTitles") or "").strip()
+            ):
+                raise ValueError("contact search arguments are invalid")
+            if arguments.get("page") != 1:
+                raise ValueError("contact search page is invalid")
+            if not any(arguments.get(key) for key in ("currentCompanies", "search")):
+                raise ValueError("contact search company is required")
+            for key in allowed - {"page"}:
+                if key in arguments and (
+                    not isinstance(arguments[key], str)
+                    or not arguments[key].strip()
+                    or len(arguments[key]) > 2_048
+                ):
+                    raise ValueError("contact search arguments are invalid")
+        else:
+            raise ValueError(f"unknown contact provider tool: {tool}")
+        return self._deepline(tool, dict(arguments))
 
     def search_companies(self, arguments: dict[str, Any]) -> dict[str, Any]:
         query = str(arguments.get("query") or "").strip()
@@ -850,7 +908,11 @@ class ArenaToolClient:
 
     def call(self, name: str, arguments: dict[str, Any]) -> Any:
         if name == "submit_companies":
-            companies = validate_companies(arguments.get("companies"), max_companies=5)
+            companies = validate_companies(
+                arguments.get("companies"),
+                max_companies=5,
+                allow_contacts=self.allow_contacts,
+            )
             return {"companies": companies}
         if name not in {
             "search_companies",
@@ -858,8 +920,12 @@ class ArenaToolClient:
             "get_company_events",
             "search_web",
             "fetch_page",
+            "harvestapi_search_leads",
+            "harvestapi_get_profile",
         }:
             raise ValueError(f"unknown tool: {name}")
+        if name in {"harvestapi_search_leads", "harvestapi_get_profile"}:
+            return self._contact_provider(name, arguments)
         return getattr(self, name)(arguments)
 
 

@@ -4,10 +4,12 @@ import json
 from decimal import Decimal
 from types import SimpleNamespace
 
+import pytest
 from pydantic_ai import messages
 from pydantic_ai.usage import RunUsage
 
 from experiments.harness_bakeoff.adapters import pydantic_ai
+from experiments.harness_bakeoff.contacts import enrich_contacts
 
 
 def _context(*, input_tokens: int = 0, requests: int = 0, tool_calls: int = 0):
@@ -356,4 +358,58 @@ def test_arena_per_request_output_cap_is_not_the_cumulative_run_limit() -> None:
             requests=16,
             tool_calls=15,
         )
+    )
+
+
+def test_contact_deadline_bounds_call_and_preserves_company_when_time_runs_out() -> (
+    None
+):
+    now = [90.0]
+    calls: list[tuple[str, float]] = []
+    client = SimpleNamespace(timeout=90.0)
+
+    def provider(name: str, _arguments: dict) -> object:
+        calls.append((name, client.timeout))
+        now[0] = 99.5
+        return {
+            "result": {
+                "data": {
+                    "elements": [
+                        {"linkedinUrl": "https://www.linkedin.com/in/ada-lovelace/"}
+                    ]
+                }
+            }
+        }
+
+    deadline_call = pydantic_ai._DeadlineProviderCall(
+        provider,
+        client,
+        100.0,
+        clock=lambda: now[0],
+    )
+    company = {
+        "company_name": "Acme",
+        "company_website": "https://acme.com/",
+        "company_linkedin": "https://www.linkedin.com/company/acme/",
+    }
+    icp = {
+        "contact_policy": "contacts_v1",
+        "target_roles": ["Vice President of Sales"],
+        "target_seniority": "VP+",
+        "contact_geography": {"countries": ["United States"]},
+    }
+
+    assert enrich_contacts(icp, [company], deadline_call) == [company]
+    assert calls == [("harvestapi_search_leads", 8.0)]
+    assert client.timeout == 90.0
+    with pytest.raises(RuntimeError, match="deadline"):
+        deadline_call("harvestapi_search_leads", {})
+
+
+def test_contact_reserve_keeps_final_output_window_inside_total_deadline() -> None:
+    contact_reserve = pydantic_ai._contact_time_reserve(285.0, arena_mode=True)
+
+    assert contact_reserve == 45.0
+    assert (
+        285.0 - contact_reserve - pydantic_ai._ARENA_FINALIZE_RESERVE_SECONDS == 165.0
     )

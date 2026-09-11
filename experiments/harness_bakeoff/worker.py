@@ -27,7 +27,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         icp = json.load(sys.stdin)
         module = importlib.import_module(MODULES[arm])
-        companies = validate_companies(module.run_icp(icp))
+        companies = validate_companies(
+            module.run_icp(icp),
+            allow_contacts=icp.get("contact_policy") == "contacts_v1",
+        )
         usage_fn = getattr(module, "get_last_usage", None)
         if callable(usage_fn):
             usage: dict[str, Any] = usage_fn()

@@ -805,7 +805,9 @@ def _validate_result_shape(row: dict[str, Any]) -> None:
         raise ValueError("companies must be a list")
     try:
         validated_companies = validate_companies(
-            row["companies"], max_companies=row["max_companies"]
+            row["companies"],
+            max_companies=row["max_companies"],
+            allow_contacts=row["input"].get("contact_policy") == "contacts_v1",
         )
     except Exception as exc:
         raise ValueError(

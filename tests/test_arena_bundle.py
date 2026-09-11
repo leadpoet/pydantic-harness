@@ -111,6 +111,89 @@ def test_arena_transport_uses_credential_free_approved_routes() -> None:
     assert not any("api_key" in request.url.params for request in requests)
 
 
+def test_contact_provider_routes_keep_search_and_profile_inside_deepline() -> None:
+    requests: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            request=request,
+            json={"status": "completed", "result": {"data": {"elements": []}}},
+        )
+
+    tools = ArenaToolClient(client=httpx.Client(transport=httpx.MockTransport(handle)))
+    tools.call(
+        "harvestapi_search_leads",
+        {
+            "currentCompanies": "https://www.linkedin.com/company/acme/",
+            "currentJobTitles": "Vice President of Sales",
+            "locations": "San Francisco",
+            "page": 1,
+        },
+    )
+    tools.call(
+        "harvestapi_get_profile",
+        {
+            "url": "https://www.linkedin.com/in/ACoOpaqueToken/",
+            "findEmail": "true",
+        },
+    )
+
+    assert [request.url.path for request in requests] == [
+        "/api/v2/integrations/harvestapi_search_leads/execute",
+        "/api/v2/integrations/harvestapi_get_profile/execute",
+    ]
+    assert [json.loads(request.content) for request in requests] == [
+        {
+            "payload": {
+                "currentCompanies": "https://www.linkedin.com/company/acme/",
+                "currentJobTitles": "Vice President of Sales",
+                "locations": "San Francisco",
+                "page": 1,
+            }
+        },
+        {
+            "payload": {
+                "url": "https://www.linkedin.com/in/ACoOpaqueToken/",
+                "findEmail": "true",
+            }
+        },
+    ]
+    assert not any("authorization" in request.headers for request in requests)
+
+
+def test_contact_provider_rejects_broad_or_non_email_profile_requests() -> None:
+    tools = ArenaToolClient(
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, request=request, json={})
+            )
+        )
+    )
+
+    with pytest.raises(ValueError, match="contact search"):
+        tools.call("harvestapi_search_leads", {"search": "Acme", "page": 1})
+    with pytest.raises(ValueError, match="email lookup"):
+        tools.call(
+            "harvestapi_get_profile",
+            {
+                "url": "https://www.linkedin.com/in/ada-lovelace/",
+                "findEmail": "false",
+            },
+        )
+
+    with pytest.raises(ValueError, match="contact search"):
+        tools.call(
+            "harvestapi_search_leads",
+            {
+                "currentCompanies": ["https://www.linkedin.com/company/acme/"],
+                "currentJobTitles": "Sales",
+                "page": 1,
+            },
+        )
+
+
 def test_company_events_filters_only_jobs_and_bounds_plain_description() -> None:
     requests: list[httpx.Request] = []
     raw_description = (

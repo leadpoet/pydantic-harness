@@ -7,7 +7,7 @@ import re
 from copy import deepcopy
 from datetime import date as ISODate
 from typing import Any, Optional
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 from pydantic import (
     BaseModel,
@@ -15,6 +15,7 @@ from pydantic import (
     Field,
     TypeAdapter,
     field_validator,
+    model_validator,
 )
 
 
@@ -35,6 +36,16 @@ _PUBLIC_LISTING_STAGE = re.compile(
     r"\(\s*(?:asx|nasdaq|nyse|lse|tsx|tsxv|hkex|sgx|jpx|tse|krx|"
     r"euronext|six|jse|nse|bse)\s*:\s*[a-z0-9][a-z0-9.\-]{0,19}\s*\)$",
     re.IGNORECASE,
+)
+_EMAIL_RE = re.compile(
+    r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$"
+)
+_LINKEDIN_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~-]{0,119}$")
+_SOURCE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/~-]{0,199}$")
+_ISO2_CODES = frozenset(
+    "AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW".split()
 )
 
 
@@ -177,6 +188,99 @@ class RequiredAttributeEvidence(BaseModel):
         return _public_http_url(value)
 
 
+class ContactLocation(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    country: str = Field(min_length=2, max_length=2)
+    region: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    city: Optional[str] = Field(default=None, min_length=1, max_length=120)
+
+    @field_validator("country", mode="before")
+    @classmethod
+    def validate_country(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        code = value.strip().upper()
+        if code not in _ISO2_CODES:
+            raise ValueError("must be a recognized two-letter country code")
+        return code
+
+
+class ContactEmailSource(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    provider: str = Field(pattern=r"^harvestapi$")
+    tool: str = Field(pattern=r"^harvestapi_get_profile$")
+    broker_call_id: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    record_id: Optional[str] = Field(default=None, min_length=1, max_length=200)
+
+    @field_validator("broker_call_id", "record_id")
+    @classmethod
+    def validate_source_id(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and _SOURCE_ID_RE.fullmatch(value) is None:
+            raise ValueError("source reference is invalid")
+        return value
+
+    @model_validator(mode="after")
+    def validate_reference(self) -> "ContactEmailSource":
+        if not self.broker_call_id and not self.record_id:
+            raise ValueError("email_source requires broker_call_id or record_id")
+        return self
+
+
+class ContactResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    full_name: str = Field(min_length=1, max_length=160)
+    role: str = Field(min_length=1, max_length=200)
+    linkedin_url: str = Field(min_length=1, max_length=512)
+    location: ContactLocation
+    email: str = Field(min_length=3, max_length=254)
+    email_source: ContactEmailSource
+
+    @field_validator("linkedin_url")
+    @classmethod
+    def validate_linkedin_url(cls, value: str) -> str:
+        normalized = _public_http_url(value)
+        parsed = urlsplit(normalized)
+        host = (parsed.hostname or "").lower()
+        parts = [unquote(part) for part in parsed.path.split("/") if part]
+        if (
+            (host != "linkedin.com" and not host.endswith(".linkedin.com"))
+            or len(parts) != 2
+            or parts[0].lower() != "in"
+            or _LINKEDIN_SLUG_RE.fullmatch(parts[1]) is None
+        ):
+            raise ValueError("must be a LinkedIn profile URL")
+        return urlunsplit(
+            (
+                "https",
+                "www.linkedin.com",
+                f"/in/{quote(parts[1], safe='._~-')}/",
+                "",
+                "",
+            )
+        )
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def validate_email(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        email = value.strip().casefold()
+        if _EMAIL_RE.fullmatch(email) is None:
+            raise ValueError("must be an email address")
+        local = email.rsplit("@", 1)[0]
+        if (
+            len(local) > 64
+            or local.startswith(".")
+            or local.endswith(".")
+            or ".." in local
+        ):
+            raise ValueError("must be an email address")
+        return email
+
+
 class CompanyResult(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -236,6 +340,10 @@ class CompanyResult(BaseModel):
     @classmethod
     def normalize_company_stage(cls, value: Any) -> Any:
         return _canonical_company_stage(value)
+
+
+class ContactCompanyResult(CompanyResult):
+    contact: Optional[ContactResult] = None
 
 
 class CompaniesResult(BaseModel):
@@ -428,7 +536,10 @@ def normalize_icp(value: dict[str, Any]) -> dict[str, Any]:
 
 
 def validate_companies(
-    value: Any, max_companies: int | None = None
+    value: Any,
+    max_companies: int | None = None,
+    *,
+    allow_contacts: bool = False,
 ) -> list[dict[str, Any]]:
     """Parse ordinary JSON without repairing quality or ranking mistakes."""
     if isinstance(value, dict) and "companies" in value:
@@ -442,6 +553,24 @@ def validate_companies(
         raise ValueError(f"runner output cannot contain more than {cap} companies")
     results: list[dict[str, Any]] = []
     for raw in value:
-        company = CompanyResult.model_validate(raw)
-        results.append(company.model_dump(mode="json"))
+        model = (
+            ContactCompanyResult
+            if allow_contacts and isinstance(raw, dict) and "contact" in raw
+            else CompanyResult
+        )
+        company = model.model_validate(raw)
+        serialized = company.model_dump(mode="json")
+        contact = getattr(company, "contact", None)
+        if contact is None:
+            serialized.pop("contact", None)
+        else:
+            source = serialized["contact"]["email_source"]
+            for key in ("broker_call_id", "record_id"):
+                if source.get(key) is None:
+                    source.pop(key, None)
+            location = serialized["contact"]["location"]
+            for key in ("region", "city"):
+                if location.get(key) is None:
+                    location.pop(key, None)
+        results.append(serialized)
     return results

@@ -19,6 +19,7 @@ from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.usage import RunUsage, UsageLimits
 
+from experiments.harness_bakeoff.contacts import enrich_contacts
 from experiments.harness_bakeoff.models import (
     CompaniesResult,
     _canonical_company_stage,
@@ -49,6 +50,9 @@ _FINALIZE_INPUT_TOKENS = 82_000
 _FINALIZE_REQUESTS = 22
 _FINALIZE_TOOL_CALLS = 24
 _ARENA_FINALIZE_RESERVE_SECONDS = 75.0
+_CONTACT_RESERVE_SECONDS = 45.0
+_CONTACT_SUBMIT_RESERVE_SECONDS = 2.0
+_CONTACT_MIN_CALL_SECONDS = 1.0
 _ARENA_REQUEST_OUTPUT_TOKENS = 4_096
 _RUN_OUTPUT_TOKENS_LIMIT = 15_000
 _FINALIZE_MARKER = "[research-budget-reserve]"
@@ -357,6 +361,44 @@ class _ToolBudget:
             return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:500]}"}
 
 
+class _DeadlineProviderCall:
+    """Bound synchronous contact calls to the remaining total run time."""
+
+    def __init__(
+        self,
+        call: Any,
+        client: Any,
+        deadline: float,
+        *,
+        clock: Any = time.monotonic,
+    ) -> None:
+        self._call = call
+        self._client = client
+        self._deadline = deadline
+        self._clock = clock
+
+    def __call__(self, name: str, arguments: dict[str, Any]) -> Any:
+        available = self._deadline - self._clock() - _CONTACT_SUBMIT_RESERVE_SECONDS
+        if available < _CONTACT_MIN_CALL_SECONDS:
+            raise RuntimeError("contact provider deadline reached")
+        original_timeout = getattr(self._client, "timeout", None)
+        if isinstance(original_timeout, (int, float)):
+            self._client.timeout = min(float(original_timeout), available)
+        try:
+            return self._call(name, arguments)
+        finally:
+            if isinstance(original_timeout, (int, float)):
+                self._client.timeout = original_timeout
+
+
+def _contact_time_reserve(run_timeout: float, *, arena_mode: bool) -> float:
+    final_reserve = _ARENA_FINALIZE_RESERVE_SECONDS if arena_mode else 0.0
+    return min(
+        _CONTACT_RESERVE_SECONDS,
+        max(0.0, run_timeout - final_reserve - _CONTACT_MIN_CALL_SECONDS),
+    )
+
+
 async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
     arena_mode = bool(str(os.environ.get("LAB_ARENA_WORKER_SOCKET") or "").strip())
     api_key = "arena-host" if arena_mode else _required_environment("OPENROUTER_API_KEY")
@@ -376,6 +418,19 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
         3600.0,
     )
     tool_timeout = _positive_float("BAKEOFF_TOOL_TIMEOUT_SECONDS", 90.0, 600.0)
+    contact_enabled = (
+        icp.get("contact_policy") == "contacts_v1"
+        and isinstance(icp.get("target_roles"), list)
+        and bool(icp["target_roles"])
+    )
+    run_started_at = time.monotonic()
+    run_deadline = run_started_at + run_timeout
+    contact_reserve = (
+        _contact_time_reserve(run_timeout, arena_mode=arena_mode)
+        if contact_enabled
+        else 0.0
+    )
+    model_deadline = run_deadline - contact_reserve
     tool_client: Any = None
     arena_http_client: httpx.AsyncClient | None = None
 
@@ -391,6 +446,7 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
             from arena_transport import ArenaToolClient, arena_openrouter_http_client
 
             tool_client = ArenaToolClient(timeout=tool_timeout)
+            tool_client.allow_contacts = contact_enabled
             arena_http_client = arena_openrouter_http_client(timeout=120.0)
             openai_client = AsyncOpenAI(
                 api_key=api_key,
@@ -556,21 +612,37 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
     run_usage = RunUsage()
     try:
         if arena_mode:
-            arena_finalize_at = time.monotonic() + max(
-                0.0, run_timeout - _ARENA_FINALIZE_RESERVE_SECONDS
-            )
+            if contact_enabled:
+                arena_finalize_at = run_started_at + max(
+                    0.0,
+                    run_timeout - contact_reserve - _ARENA_FINALIZE_RESERVE_SECONDS,
+                )
+            else:
+                arena_finalize_at = time.monotonic() + max(
+                    0.0, run_timeout - _ARENA_FINALIZE_RESERVE_SECONDS
+                )
+        model_timeout = (
+            max(_CONTACT_MIN_CALL_SECONDS, model_deadline - time.monotonic())
+            if contact_enabled
+            else run_timeout
+        )
         result = await asyncio.wait_for(
             agent.run(
                 build_prompt(icp, max_companies=max_companies),
                 usage_limits=_run_usage_limits(),
                 usage=run_usage,
             ),
-            timeout=run_timeout,
+            timeout=model_timeout,
         )
         companies = validate_companies(
             result.output.model_dump(mode="json"), max_companies
         )
         companies = _filter_explicit_stage_conflicts(icp, companies)
+        contact_call = _DeadlineProviderCall(budget.call, tool_client, run_deadline)
+        companies = enrich_contacts(icp, companies, contact_call)
+        companies = validate_companies(
+            companies, max_companies, allow_contacts=contact_enabled
+        )
         budget.call("submit_companies", {"companies": companies})
         return companies
     finally:
