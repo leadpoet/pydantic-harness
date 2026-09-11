@@ -263,7 +263,9 @@ def test_prior_fetch_page_keeps_full_quote_and_url() -> None:
     assert exact_quote in fetch_return.content["text"]
 
 
-def test_budget_reserve_warns_once_and_hides_only_research_tools() -> None:
+def test_budget_reserve_warns_once_and_hides_only_research_tools(
+    monkeypatch,
+) -> None:
     context = _context(input_tokens=82_000, requests=12, tool_calls=12)
     processed = pydantic_ai._process_history(context, _history())
     processed_again = pydantic_ai._process_history(context, processed)
@@ -283,6 +285,55 @@ def test_budget_reserve_warns_once_and_hides_only_research_tools() -> None:
     assert pydantic_ai._prepare_research_tools(context, tool_definitions) == []
 
     below_reserve = _context(input_tokens=81_999, requests=21, tool_calls=23)
+    assert (
+        pydantic_ai._prepare_research_tools(below_reserve, tool_definitions)
+        == tool_definitions
+    )
+
+    monkeypatch.setattr(pydantic_ai.time, "monotonic", lambda: 199.999)
+    assert (
+        pydantic_ai._prepare_research_tools(
+            below_reserve, tool_definitions, finalize_at=200.0
+        )
+        == tool_definitions
+    )
+    before_cutoff = pydantic_ai._process_history(
+        below_reserve, _history(), finalize_at=200.0
+    )
+    assert not any(
+        isinstance(part, messages.UserPromptPart)
+        and isinstance(part.content, str)
+        and pydantic_ai._FINALIZE_MARKER in part.content
+        for message in before_cutoff
+        if isinstance(message, messages.ModelRequest)
+        for part in message.parts
+    )
+
+    monkeypatch.setattr(pydantic_ai.time, "monotonic", lambda: 200.0)
+    assert (
+        pydantic_ai._prepare_research_tools(
+            below_reserve, tool_definitions, finalize_at=200.0
+        )
+        == []
+    )
+    at_cutoff = pydantic_ai._process_history(
+        below_reserve, _history(), finalize_at=200.0
+    )
+    at_cutoff_again = pydantic_ai._process_history(
+        below_reserve, at_cutoff, finalize_at=200.0
+    )
+    time_warnings = [
+        part.content
+        for message in at_cutoff_again
+        if isinstance(message, messages.ModelRequest)
+        for part in message.parts
+        if isinstance(part, messages.UserPromptPart)
+        and isinstance(part.content, str)
+        and pydantic_ai._FINALIZE_MARKER in part.content
+    ]
+    assert len(time_warnings) == 1
+
+    # Without an Arena deadline, elapsed time does not alter the shared limits.
     assert (
         pydantic_ai._prepare_research_tools(below_reserve, tool_definitions)
         == tool_definitions

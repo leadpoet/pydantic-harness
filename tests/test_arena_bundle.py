@@ -1191,7 +1191,9 @@ def test_arena_company_limit_is_forwarded_to_the_prompt(monkeypatch) -> None:
 
     async def model_response(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        prompts.append(body["messages"][-1]["content"])
+        prompts.extend(
+            str(message.get("content") or "") for message in body["messages"]
+        )
         return httpx.Response(
             200,
             request=request,
@@ -1257,7 +1259,8 @@ def test_arena_company_limit_is_forwarded_to_the_prompt(monkeypatch) -> None:
         ):
             assert run_icp({"icp_id": "today", "intent_signal": "funding"}) == []
 
-    assert prompts and "Return up to 2 companies." in prompts[0]
+    assert any("Return up to 2 companies." in prompt for prompt in prompts)
+    assert any("[research-budget-reserve]" in prompt for prompt in prompts)
 
 
 def test_arena_client_closes_when_model_transport_setup_fails(monkeypatch) -> None:

@@ -6,6 +6,7 @@ import asyncio
 import dataclasses
 import json
 import os
+import time
 from decimal import Decimal
 from typing import Any
 
@@ -47,6 +48,7 @@ _MAX_PRIOR_TOOL_RESULT_BYTES = 1_200
 _FINALIZE_INPUT_TOKENS = 82_000
 _FINALIZE_REQUESTS = 22
 _FINALIZE_TOOL_CALLS = 24
+_ARENA_FINALIZE_RESERVE_SECONDS = 75.0
 _ARENA_REQUEST_OUTPUT_TOKENS = 4_096
 _RUN_OUTPUT_TOKENS_LIMIT = 15_000
 _FINALIZE_MARKER = "[research-budget-reserve]"
@@ -216,16 +218,22 @@ def _bounded_history_tool_result(value: Any) -> Any:
     return fallback
 
 
-def _finalization_due(usage: RunUsage) -> bool:
+def _finalization_due(
+    usage: RunUsage, *, finalize_at: float | None = None
+) -> bool:
     return (
         usage.input_tokens >= _FINALIZE_INPUT_TOKENS
         or usage.requests >= _FINALIZE_REQUESTS
         or usage.tool_calls >= _FINALIZE_TOOL_CALLS
+        or (finalize_at is not None and time.monotonic() >= finalize_at)
     )
 
 
 def _process_history(
-    context: RunContext[Any], history: list[messages.ModelMessage]
+    context: RunContext[Any],
+    history: list[messages.ModelMessage],
+    *,
+    finalize_at: float | None = None,
 ) -> list[messages.ModelMessage]:
     """Project old tool payloads and add one native final-output warning."""
 
@@ -253,7 +261,7 @@ def _process_history(
         ]
         processed.append(dataclasses.replace(message, parts=parts))
 
-    if _finalization_due(context.usage):
+    if _finalization_due(context.usage, finalize_at=finalize_at):
         already_warned = any(
             isinstance(part, messages.UserPromptPart)
             and isinstance(part.content, str)
@@ -275,11 +283,18 @@ def _process_history(
 
 
 def _prepare_research_tools(
-    context: RunContext[Any], tool_definitions: list[ToolDefinition]
+    context: RunContext[Any],
+    tool_definitions: list[ToolDefinition],
+    *,
+    finalize_at: float | None = None,
 ) -> list[ToolDefinition]:
     """Leave only the output tool available once the final-output reserve starts."""
 
-    return [] if _finalization_due(context.usage) else tool_definitions
+    return (
+        []
+        if _finalization_due(context.usage, finalize_at=finalize_at)
+        else tool_definitions
+    )
 
 
 def _run_usage_limits() -> UsageLimits:
@@ -460,6 +475,20 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
     max_output_tokens = (
         _ARENA_REQUEST_OUTPUT_TOKENS if arena_mode else _RUN_OUTPUT_TOKENS_LIMIT
     )
+    arena_finalize_at: float | None = None
+
+    def process_history(
+        context: RunContext[Any], history: list[messages.ModelMessage]
+    ) -> list[messages.ModelMessage]:
+        return _process_history(context, history, finalize_at=arena_finalize_at)
+
+    def prepare_research_tools(
+        context: RunContext[Any], tool_definitions: list[ToolDefinition]
+    ) -> list[ToolDefinition]:
+        return _prepare_research_tools(
+            context, tool_definitions, finalize_at=arena_finalize_at
+        )
+
     model_settings: OpenRouterModelSettings = {
         "max_tokens": max_output_tokens,
         "parallel_tool_calls": False,
@@ -515,8 +544,8 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
                 strict=True,
             ),
             capabilities=[
-                ProcessHistory(_process_history),
-                PrepareTools(_prepare_research_tools),
+                ProcessHistory(process_history),
+                PrepareTools(prepare_research_tools),
             ],
             model_settings=model_settings,
             tool_timeout=tool_timeout,
@@ -526,6 +555,10 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
         raise
     run_usage = RunUsage()
     try:
+        if arena_mode:
+            arena_finalize_at = time.monotonic() + max(
+                0.0, run_timeout - _ARENA_FINALIZE_RESERVE_SECONDS
+            )
         result = await asyncio.wait_for(
             agent.run(
                 build_prompt(icp, max_companies=max_companies),
