@@ -35,10 +35,15 @@ from .tool_contract import validate_job_category
 
 _URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 _MAX_TOOL_RESPONSE_BYTES = 6_000
+_MAX_CONTACT_TOOL_RESPONSE_BYTES = 1_000_000
 _MAX_PAGE_TEXT_CHARS = 2_500
 _MAX_JOB_DESCRIPTION_CHARS = 1_000
 _MAX_JOB_DESCRIPTION_SOURCE_CHARS = 20_000
 _SCRAPINGDOG_REQUEST_USD = 0.001
+_HARVESTAPI_SEARCH_LEADS_FALLBACK_USD = 0.07
+_CONTACT_TOOL_NAMES = frozenset(
+    {"harvestapi_search_leads", "harvestapi_get_profile"}
+)
 _HTML_BLOCK_RE = re.compile(
     r"<(script|style)\b[^>]*>.*?</\1\s*>", re.IGNORECASE | re.DOTALL
 )
@@ -561,7 +566,9 @@ def verify_live_smoke_company(
     company: dict[str, Any], *, timeout_seconds: float = 20.0
 ) -> dict[str, Any]:
     """Require one structurally valid company plus live company and intent URLs."""
-    parsed = validate_companies([company], max_companies=1)[0]
+    parsed = validate_companies(
+        [company], max_companies=1, allow_contacts="contact" in company
+    )[0]
     intent_urls = [
         str(signal.get("url") or "")
         for signal in parsed.get("intent_signals", [])
@@ -649,6 +656,7 @@ class LiveProviderTools:
         max_provider_calls: int = 30,
         max_provider_cost_usd: float = 2.0,
         evaluation_date: str | None = None,
+        allow_contacts: bool = False,
     ) -> None:
         if not deepline_api_key or not scrapingdog_api_key:
             raise RuntimeError("Deepline and ScrapingDog credentials are required")
@@ -660,6 +668,7 @@ class LiveProviderTools:
         self.max_provider_calls = max_provider_calls
         self.max_provider_cost_usd = max_provider_cost_usd
         self.evaluation_date = _evaluation_day(evaluation_date)
+        self.allow_contacts = bool(allow_contacts)
         self.stats = ProviderStats()
         self._execution_lock = threading.Lock()
         self._submitted = False
@@ -764,6 +773,72 @@ class LiveProviderTools:
             return _json_safe(result)
         finally:
             self.stats.add(tool_id, "deepline", started, status, cost)
+
+    def harvestapi_search_leads(self, arguments: dict[str, Any]) -> Any:
+        allowed = {
+            "currentCompanies",
+            "currentJobTitles",
+            "locations",
+            "page",
+            "search",
+        }
+        if set(arguments) - allowed:
+            raise ValueError("invalid harvestapi_search_leads arguments")
+        if type(arguments.get("page")) is not int or arguments["page"] != 1:
+            raise ValueError("harvestapi_search_leads page must be 1")
+        for key, value in arguments.items():
+            if key != "page" and (
+                not isinstance(value, str) or not value.strip() or len(value) > 2_048
+            ):
+                raise ValueError(f"harvestapi_search_leads {key} is invalid")
+        if not arguments.get("currentJobTitles"):
+            raise ValueError("harvestapi_search_leads currentJobTitles is required")
+        if not (arguments.get("currentCompanies") or arguments.get("search")):
+            raise ValueError(
+                "harvestapi_search_leads company constraint is required"
+            )
+        return self._deepline(
+            "harvestapi_search_leads",
+            arguments,
+            fallback_cost=_HARVESTAPI_SEARCH_LEADS_FALLBACK_USD,
+        )
+
+    def harvestapi_get_profile(self, arguments: dict[str, Any]) -> Any:
+        if set(arguments) != {"url", "findEmail"}:
+            raise ValueError("invalid harvestapi_get_profile arguments")
+        url = str(arguments.get("url") or "").strip()
+        try:
+            parsed = urlsplit(url)
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("harvestapi_get_profile url is invalid") from exc
+        host = (parsed.hostname or "").casefold().rstrip(".")
+        parts = [part for part in parsed.path.split("/") if part]
+        if (
+            parsed.scheme != "https"
+            or host not in {"linkedin.com", "www.linkedin.com"}
+            or parsed.username is not None
+            or parsed.password is not None
+            or port not in {None, 443}
+            or len(parts) != 2
+            or parts[0].casefold() != "in"
+            or not parts[1]
+            or len(url) > 2_048
+        ):
+            raise ValueError("harvestapi_get_profile url is invalid")
+        if arguments.get("findEmail") != "true":
+            raise ValueError("harvestapi_get_profile findEmail must be true")
+        # The live catalog declares provider-usage pricing for this tool. If a
+        # response has no measured USD amount, fail closed by charging the
+        # attempt's full remaining provider budget.
+        fallback_cost = max(
+            0.0, self.max_provider_cost_usd - self.stats.estimated_cost_usd
+        )
+        return self._deepline(
+            "harvestapi_get_profile",
+            {"url": url, "findEmail": "true"},
+            fallback_cost=fallback_cost,
+        )
 
     def search_companies(self, arguments: dict[str, Any]) -> dict[str, Any]:
         query = str(arguments.get("query") or "").strip()
@@ -1251,22 +1326,39 @@ class LiveProviderTools:
                 )
             if name == "submit_companies":
                 companies = validate_companies(
-                    arguments.get("companies"), max_companies=5
+                    arguments.get("companies"),
+                    max_companies=5,
+                    allow_contacts=self.allow_contacts,
                 )
                 self._submitted = True
                 return {"companies": companies}
             method = getattr(self, name, None)
+            allowed_tools = {
+                "search_companies",
+                "get_company_profile",
+                "get_company_events",
+                "search_web",
+                "fetch_page",
+            }
+            if self.allow_contacts:
+                allowed_tools.update(_CONTACT_TOOL_NAMES)
             if (
                 name.startswith("_")
                 or method is None
-                or name
-                not in {
-                    "search_companies",
-                    "get_company_profile",
-                    "get_company_events",
-                    "search_web",
-                    "fetch_page",
-                }
+                or name not in allowed_tools
             ):
                 raise ValueError(f"unknown tool: {name}")
-            return _bounded_tool_result(method(arguments))
+            result = method(arguments)
+            if name in _CONTACT_TOOL_NAMES:
+                # The deterministic contact parser needs the structured profile,
+                # not the generic LLM-facing truncation preview.
+                encoded = json.dumps(
+                    result,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8")
+                if len(encoded) > _MAX_CONTACT_TOOL_RESPONSE_BYTES:
+                    raise RuntimeError("contact provider response exceeds size limit")
+                return result
+            return _bounded_tool_result(result)

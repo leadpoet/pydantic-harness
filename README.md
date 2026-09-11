@@ -122,6 +122,44 @@ In the Arena, reasoning uses OpenRouter and research uses Deepline, including
 Exa search and page contents through Deepline. No separate Exa or ScrapingDog
 key is required for this native path. The standalone tools below remain separate.
 
+### Contacts
+
+When an ICP includes `"contact_policy": "contacts_v1"`, the harness searches
+for one current employee after company research. The ICP supplies
+`target_roles`, optional `target_seniority`, and `contact_geography` with
+`countries`, `regions`, and `cities` lists. Contact location is separate from
+company headquarters.
+
+Each supported contact is added to its company in this form (example only):
+
+```json
+{
+  "contact": {
+    "full_name": "Jane Doe",
+    "role": "Chief Technology Officer",
+    "linkedin_url": "https://www.linkedin.com/in/jane-doe/",
+    "location": {"country": "US", "region": "California"},
+    "email": "jane@example.com",
+    "email_source": {
+      "provider": "harvestapi",
+      "tool": "harvestapi_get_profile",
+      "record_id": "provider-profile-id"
+    }
+  }
+}
+```
+
+Discovery uses HarvestAPI through Deepline, with one search page and at most
+three profile lookups per company, within the existing time and call limits.
+Names, current roles, locations, and emails come from provider records, not
+guesses. The subnet independently checks identity, employer, role, location,
+and email. Valid and explicitly labeled catch-all emails can qualify.
+
+If no supported contact is found, the company remains in the output without
+`contact`; it receives no credit in a contact-required round. Contacts are
+omitted for company-only ICPs. A successful sourcing run is not a guarantee
+that every company or contact will pass independent scoring.
+
 ## Miner competition contract
 
 Miners can fork this repository and change the model, harness, prompts,

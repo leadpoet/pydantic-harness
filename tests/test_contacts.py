@@ -5,7 +5,11 @@ from copy import deepcopy
 import pytest
 from pydantic import ValidationError
 
-from experiments.harness_bakeoff.contacts import _company_name, enrich_contacts
+from experiments.harness_bakeoff.contacts import (
+    _company_name,
+    _search_request,
+    enrich_contacts,
+)
 from experiments.harness_bakeoff.models import CompaniesResult, validate_companies
 
 
@@ -77,6 +81,38 @@ def _profile(**updates: object) -> dict:
     }
     value.update(updates)
     return value
+
+
+def test_search_request_normalizes_legal_suffix_only_without_company_linkedin() -> (
+    None
+):
+    company = {
+        **_company(),
+        "company_name": "Microsoft Corporation",
+        "company_linkedin": "",
+    }
+
+    request = _search_request(_icp(), company)
+
+    assert request == {
+        "currentJobTitles": "Vice President of Sales",
+        "page": 1,
+        "search": "microsoft",
+        "locations": "San Francisco",
+    }
+
+
+def test_search_request_keeps_linkedin_constraint_and_degenerate_name_fallback() -> (
+    None
+):
+    linked = _search_request(_icp(), _company())
+    degenerate = _search_request(
+        _icp(), {**_company(), "company_name": "Corporation", "company_linkedin": ""}
+    )
+
+    assert linked["currentCompanies"] == "https://www.linkedin.com/company/acme/"
+    assert "search" not in linked
+    assert degenerate["search"] == "Corporation"
 
 
 class ScriptedProvider:

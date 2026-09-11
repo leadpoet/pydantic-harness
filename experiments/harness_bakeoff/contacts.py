@@ -622,7 +622,8 @@ def _search_request(
     if _linkedin_company_slug(company_linkedin):
         request["currentCompanies"] = company_linkedin
     else:
-        request["search"] = _text(company.get("company_name"))
+        company_name = _text(company.get("company_name"))
+        request["search"] = _company_name(company_name) or company_name
     geography = icp.get("contact_geography")
     geography = geography if isinstance(geography, Mapping) else {}
     locations = (

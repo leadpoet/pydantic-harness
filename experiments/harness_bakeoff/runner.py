@@ -563,6 +563,7 @@ def run_attempt(
         max_provider_calls=MAX_PROVIDER_CALLS,
         max_provider_cost_usd=float(MAX_PROVIDER_COST_USD),
         evaluation_date=evaluation_date,
+        allow_contacts=icp.get("contact_policy") == "contacts_v1",
     )
     error = ""
     worker: dict[str, Any] = {}
