@@ -466,11 +466,16 @@ def _role_matches(title: str, targets: Sequence[str], requested_seniority: Any) 
             return True
         target_words = normalized.split()
         width = len(target_words)
-        if width >= 2 and any(
-            actual_words[index : index + width] == target_words
-            for index in range(len(actual_words) - width + 1)
-        ):
-            return True
+        if width < 2:
+            continue
+        # Allow modifiers such as "VP Software Engineering", while keeping
+        # the title words in order. The independent scorer still judges fit.
+        matched = 0
+        for word in actual_words:
+            if word == target_words[matched]:
+                matched += 1
+                if matched == width:
+                    return True
     return False
 
 

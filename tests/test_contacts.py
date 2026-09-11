@@ -471,7 +471,33 @@ def test_explicit_false_current_flag_wins_over_true_flag() -> None:
     assert companies == [original]
 
 
-def test_target_role_words_must_be_an_ordered_contiguous_phrase() -> None:
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Vice President of Software Engineering",
+        "Vice President, Forward Deployed Engineering",
+    ],
+)
+def test_target_role_allows_modifiers_without_changing_the_claimed_title(title) -> None:
+    position = {**_profile()["currentPosition"][0], "title": title}
+    provider = ScriptedProvider(_profile(currentPosition=[position]))
+
+    def call(tool, payload):
+        response = provider(tool, payload)
+        if tool == "harvestapi_search_leads":
+            response["result"]["data"]["elements"][0]["currentPositions"] = [position]
+        return response
+
+    companies = enrich_contacts(
+        _icp(target_roles=["VP Engineering"], target_seniority="VP+"),
+        [_company()],
+        call,
+    )
+
+    assert companies[0]["contact"]["role"] == title
+
+
+def test_target_role_words_must_remain_in_order() -> None:
     position = {
         **_profile()["currentPosition"][0],
         "title": "Chief Nursing Innovation Officer and Industry Executive",
@@ -481,9 +507,14 @@ def test_target_role_words_must_be_an_ordered_contiguous_phrase() -> None:
         target_roles=["Chief Executive Officer"],
         target_seniority="C-level",
     )
+    provider = ScriptedProvider(_profile(currentPosition=[position]))
 
-    companies = enrich_contacts(
-        icp, [original], ScriptedProvider(_profile(currentPosition=[position]))
-    )
+    def call(tool, payload):
+        response = provider(tool, payload)
+        if tool == "harvestapi_search_leads":
+            response["result"]["data"]["elements"][0]["currentPositions"] = [position]
+        return response
+
+    companies = enrich_contacts(icp, [original], call)
 
     assert companies == [original]
