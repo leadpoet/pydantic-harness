@@ -287,7 +287,7 @@ class HarnessContractTests(unittest.TestCase):
             "bonus_intents",
         ):
             self.assertNotIn(duplicate, displayed)
-        self.assertLessEqual(len(prompt), 6_700)
+        self.assertLessEqual(len(prompt), 7_600)
 
     def test_prompt_prioritizes_primary_and_requires_event_grounding(self) -> None:
         prompt = build_prompt(
@@ -381,7 +381,7 @@ class HarnessContractTests(unittest.TestCase):
         self.assertIn("Verify a resulting dated hit before abandoning", prompt)
         self.assertIn("planned, future, or merely announced is not completed", prompt)
 
-    def test_prompt_requires_current_linkedin_and_us_hq_state(self) -> None:
+    def test_prompt_requires_current_size_fallback_linkedin_and_us_hq_state(self) -> None:
         prompt = build_prompt({"icp_id": "today"})
 
         self.assertNotIn("leave company_linkedin empty", prompt)
@@ -391,11 +391,30 @@ class HarnessContractTests(unittest.TestCase):
         )
         self.assertIn("U.S. HQ needs a proven state", prompt)
         self.assertIn("Employee estimates from discovery/profile are shortlist clues", prompt)
-        self.assertIn("not bands or current exact staff", prompt)
-        self.assertIn("Verify a current public band", prompt)
-        self.assertIn("never infer it from an estimate", prompt)
-        self.assertIn("only the supported band", prompt)
-        self.assertIn("never an exact estimate", prompt)
+        self.assertIn("never current proof", prompt)
+        self.assertIn("public band or an exact current integer", prompt)
+        self.assertIn("approximate, qualified, projected, historical", prompt)
+        self.assertIn("snippet-only counts are insufficient", prompt)
+        for exact_mapping in (
+            "0 or 1 -> 0-1",
+            "2-10 -> 2-10",
+            "11-50 -> 11-50",
+            "51-200 -> 51-200",
+            "201-500 -> 201-500",
+            "501-1,000 -> 501-1,000",
+            "1,001-5,000 -> 1,001-5,000",
+            "5,001-10,000 -> 5,001-10,000",
+            "10,001 or more -> 10,001+",
+        ):
+            with self.subTest(exact_mapping=exact_mapping):
+                self.assertIn(exact_mapping, prompt)
+        self.assertIn("mapped canonical employee_count when it is listed", prompt)
+        self.assertIn("never copy the requested bucket as proof", prompt)
+        self.assertIn("size source URL in fit_evidence_urls", prompt)
+        self.assertIn("one targeted search_web(mode='search')", prompt)
+        self.assertIn("then fetch_page the best non-LinkedIn identity-bound result", prompt)
+        self.assertIn("Search snippets select a URL only", prompt)
+        self.assertIn("fetched page body must prove the count", prompt)
         self.assertIn("linkedin_profile_evidence fields stand alone", prompt)
         self.assertIn("never generic login/sign-up", prompt)
         self.assertIn(
