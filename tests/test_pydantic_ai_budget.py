@@ -96,6 +96,49 @@ def test_prior_tool_payload_is_bounded_but_latest_remains_full() -> None:
     assert latest_return.content == original[4].parts[0].content
 
 
+def test_latest_parallel_tool_batch_remains_full_while_prior_request_is_bounded() -> (
+    None
+):
+    history = _history()[:3]
+    fresh_results = [
+        _large_result(company, suffix)
+        for company, suffix in (
+            ("Beta", "b"),
+            ("Gamma", "c"),
+            ("Delta", "d"),
+        )
+    ]
+    history.extend(
+        [
+            messages.ModelResponse(
+                parts=[
+                    messages.ToolCallPart(
+                        "search_web",
+                        {"query": company},
+                        tool_call_id=f"fresh-{index}",
+                    )
+                    for index, company in enumerate(("Beta", "Gamma", "Delta"))
+                ]
+            ),
+            messages.ModelRequest(
+                parts=[
+                    messages.ToolReturnPart(
+                        "search_web",
+                        result,
+                        tool_call_id=f"fresh-{index}",
+                    )
+                    for index, result in enumerate(fresh_results)
+                ]
+            ),
+        ]
+    )
+
+    processed = pydantic_ai._process_history(_context(), history)
+
+    assert len(pydantic_ai._json_bytes(processed[2].parts[0].content)) <= 1_200
+    assert [part.content for part in processed[4].parts] == fresh_results
+
+
 def test_prior_company_profile_keeps_fit_and_latest_financing_evidence() -> None:
     attributes = {
         "amount": "10000000",

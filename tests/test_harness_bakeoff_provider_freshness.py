@@ -375,6 +375,7 @@ class ProviderFreshnessTests(unittest.TestCase):
                     "urls": ["https://linkedin.com/company/example"],
                     "text": {"maxCharacters": 4_000},
                     "maxAgeHours": 0,
+                    "livecrawlTimeout": 20_000,
                 },
             )
             self.assertEqual(kwargs["fallback_cost"], 0.002)

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import time
 from unittest.mock import patch
 
 import httpx
@@ -596,6 +598,7 @@ def test_company_profile_adds_separate_current_linkedin_size_evidence() -> None:
         "urls": ["https://linkedin.com/company/example"],
         "text": {"maxCharacters": 4_000},
         "maxAgeHours": 0,
+        "livecrawlTimeout": 20_000,
     }
     assert profile["company"]["employee_count_estimate"] == 89
     assert profile["company"]["linkedin_url"] == "linkedin.com/company/example"
@@ -1264,9 +1267,120 @@ def test_public_harness_uses_pydantic_ai_without_a_provider_key(monkeypatch) -> 
     assert "authorization" not in seen[0].headers
     body = json.loads(seen[0].content)
     assert body["max_tokens"] == 4_096
+    assert body["parallel_tool_calls"] is True
     assert body["reasoning"] == {"effort": "medium", "exclude": True}
     assert "stream" not in body
     assert "usage" not in body
+
+
+def test_public_harness_returns_one_fresh_batched_tool_request_sequentially(
+    monkeypatch,
+) -> None:
+    model_requests: list[dict] = []
+    research_calls: list[str] = []
+    active_calls = 0
+    max_active_calls = 0
+    call_lock = threading.Lock()
+
+    def completion(tool_calls: list[dict], generation: int) -> dict:
+        return {
+            "id": f"generation-{generation}",
+            "object": "chat.completion",
+            "created": generation,
+            "model": "openai/gpt-5.5",
+            "provider": "OpenAI",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": tool_calls,
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+
+    async def model_response(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        model_requests.append(body)
+        if len(model_requests) == 1:
+            calls = [
+                {
+                    "id": f"research-{index}",
+                    "type": "function",
+                    "function": {
+                        "name": "search_web",
+                        "arguments": json.dumps({"query": f"candidate {index}"}),
+                    },
+                }
+                for index in range(3)
+            ]
+            payload = completion(calls, 1)
+        else:
+            calls = [
+                {
+                    "id": "submit-1",
+                    "type": "function",
+                    "function": {
+                        "name": "submit_companies",
+                        "arguments": '{"companies":[]}',
+                    },
+                }
+            ]
+            payload = completion(calls, 2)
+        return httpx.Response(200, request=request, json=payload)
+
+    class FakeArenaTools:
+        def __init__(self, timeout: float = 90.0) -> None:
+            self.timeout = timeout
+
+        def call(self, name, arguments):
+            nonlocal active_calls, max_active_calls
+            if name == "submit_companies":
+                return arguments
+            assert name == "search_web"
+            with call_lock:
+                active_calls += 1
+                max_active_calls = max(max_active_calls, active_calls)
+            try:
+                research_calls.append(arguments["query"])
+                time.sleep(0.01)
+                return {"results": [], "count": 0, "mode": "search"}
+            finally:
+                with call_lock:
+                    active_calls -= 1
+
+        def close(self) -> None:
+            return None
+
+    def model_client(timeout: float) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            transport=ArenaOpenRouterTransport(
+                inner=httpx.MockTransport(model_response)
+            ),
+        )
+
+    monkeypatch.setenv("LAB_ARENA_WORKER_SOCKET", "/tmp/unused-worker.sock")
+    monkeypatch.setenv("BAKEOFF_OPENROUTER_MODEL", "openai/gpt-5.5")
+    monkeypatch.setenv("BAKEOFF_RUN_TIMEOUT_SECONDS", "130")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    with patch.object(arena_transport, "ArenaToolClient", FakeArenaTools):
+        with patch.object(
+            arena_transport, "arena_openrouter_http_client", model_client
+        ):
+            assert run_icp({"icp_id": "today"}) == []
+
+    assert len(model_requests) == 2
+    assert model_requests[0]["parallel_tool_calls"] is True
+    assert (
+        sum(message.get("role") == "tool" for message in model_requests[1]["messages"])
+        == 3
+    )
+    assert research_calls == ["candidate 0", "candidate 1", "candidate 2"]
+    assert max_active_calls == 1
 
 
 def test_arena_company_limit_is_forwarded_to_the_prompt(monkeypatch) -> None:

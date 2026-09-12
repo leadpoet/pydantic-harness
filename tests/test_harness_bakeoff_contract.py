@@ -287,7 +287,7 @@ class HarnessContractTests(unittest.TestCase):
             "bonus_intents",
         ):
             self.assertNotIn(duplicate, displayed)
-        self.assertLessEqual(len(prompt), 5_660)
+        self.assertLessEqual(len(prompt), 6_400)
 
     def test_prompt_prioritizes_primary_and_requires_event_grounding(self) -> None:
         prompt = build_prompt(
@@ -317,7 +317,8 @@ class HarnessContractTests(unittest.TestCase):
         self.assertIn("loosen one discovery filter", prompt)
         self.assertIn("never loosen final fit", prompt)
         self.assertIn("before verifying a plausible candidate", prompt)
-        self.assertIn("Profile its domain and fetch_page", prompt)
+        self.assertIn("best two or three independent candidates", prompt)
+        self.assertIn("Never batch a call that depends on another call's result", prompt)
         self.assertIn("Series C, Series D, or later", prompt)
         self.assertIn("Quote the fetched article body", prompt)
         self.assertIn("not snippets, navigation, or related cards", prompt)
@@ -380,12 +381,16 @@ class HarnessContractTests(unittest.TestCase):
         self.assertIn("Verify a resulting dated hit before abandoning", prompt)
         self.assertIn("planned, future, or merely announced is not completed", prompt)
 
-    def test_prompt_does_not_trust_stored_linkedin_url(self) -> None:
+    def test_prompt_requires_current_linkedin_and_us_hq_state(self) -> None:
         prompt = build_prompt({"icp_id": "today"})
 
-        self.assertIn("Stored LinkedIn URLs are unverified", prompt)
-        self.assertIn("canonical company URL from a current page", prompt)
-        self.assertIn("leave company_linkedin empty", prompt)
+        self.assertNotIn("leave company_linkedin empty", prompt)
+        self.assertIn(
+            "Every submitted company needs a verified canonical company_linkedin",
+            prompt,
+        )
+        self.assertIn("for a United States HQ", prompt)
+        self.assertIn("evidence-backed state", prompt)
         self.assertIn("Employee estimates from discovery/profile are shortlist clues", prompt)
         self.assertIn("not bands or current exact staff", prompt)
         self.assertIn("Verify a current public band", prompt)

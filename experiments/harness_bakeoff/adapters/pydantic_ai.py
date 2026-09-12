@@ -241,7 +241,18 @@ def _process_history(
 ) -> list[messages.ModelMessage]:
     """Project old tool payloads and add one native final-output warning."""
 
-    tool_returns = [
+    research_return_requests = {
+        message_index
+        for message_index, message in enumerate(history)
+        if isinstance(message, messages.ModelRequest)
+        if any(
+            isinstance(part, messages.ToolReturnPart)
+            and part.tool_name in _RESEARCH_TOOL_NAMES
+            for part in message.parts
+        )
+    }
+    latest_return_request = max(research_return_requests, default=None)
+    compactable_returns = [
         (message_index, part_index)
         for message_index, message in enumerate(history)
         if isinstance(message, messages.ModelRequest)
@@ -249,7 +260,11 @@ def _process_history(
         if isinstance(part, messages.ToolReturnPart)
         and part.tool_name in _COMPACTABLE_TOOL_NAMES
     ]
-    prior_returns = set(tool_returns[:-1])
+    prior_returns = {
+        (message_index, part_index)
+        for message_index, part_index in compactable_returns
+        if message_index != latest_return_request
+    }
     processed: list[messages.ModelMessage] = []
     for message_index, message in enumerate(history):
         if not isinstance(message, messages.ModelRequest):
@@ -547,7 +562,7 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
 
     model_settings: OpenRouterModelSettings = {
         "max_tokens": max_output_tokens,
-        "parallel_tool_calls": False,
+        "parallel_tool_calls": True,
         "timeout": 120,
         "openrouter_reasoning": {"effort": "medium", "exclude": arena_mode},
         "openrouter_usage": {"include": True},
@@ -567,30 +582,35 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
                     "search_companies",
                     TOOL_DESCRIPTIONS["search_companies"],
                     tool_input_schema("search_companies"),
+                    sequential=True,
                 ),
                 Tool.from_schema(
                     get_company_profile,
                     "get_company_profile",
                     TOOL_DESCRIPTIONS["get_company_profile"],
                     tool_input_schema("get_company_profile"),
+                    sequential=True,
                 ),
                 Tool.from_schema(
                     get_company_events,
                     "get_company_events",
                     TOOL_DESCRIPTIONS["get_company_events"],
                     tool_input_schema("get_company_events"),
+                    sequential=True,
                 ),
                 Tool.from_schema(
                     search_web,
                     "search_web",
                     TOOL_DESCRIPTIONS["search_web"],
                     tool_input_schema("search_web"),
+                    sequential=True,
                 ),
                 Tool.from_schema(
                     fetch_page,
                     "fetch_page",
                     TOOL_DESCRIPTIONS["fetch_page"],
                     tool_input_schema("fetch_page"),
+                    sequential=True,
                 ),
             ],
             output_type=ToolOutput(

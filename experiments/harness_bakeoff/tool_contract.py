@@ -43,13 +43,16 @@ TOOL_DESCRIPTIONS = {
         "Discover candidate companies with Deepline. Use focused queries and ICP filters."
     ),
     "get_company_profile": (
-        "Get Deepline firmographics plus up to three latest financing events for one "
-        "company domain. Do not repeat a FUNDING event lookup when financing is already "
-        "returned. Empty financing results are not proof that no later funding exists. "
-        "Optional linkedin_profile_evidence.employee_count comes only from an explicit "
-        "LinkedIn Company size label, never an associated-employee count. Bind that "
-        "source to the requested company before using it. Optional listed_headquarters "
-        "is the profile's literal public Headquarters label, not a verified legal HQ."
+        "Get one bundled result with Deepline firmographics, up to three latest financing "
+        "events, and optional current LinkedIn page evidence for one company domain. Do "
+        "not repeat searches for valid facts already present. Do not repeat a FUNDING event "
+        "lookup when financing is already returned. Empty financing results are not proof "
+        "that no later funding exists or that a requested stage matches. Optional "
+        "linkedin_profile_evidence.url can supply the canonical company LinkedIn only when "
+        "the current page URL and title are consistent with the requested company. Its "
+        "employee_count comes only from an explicit LinkedIn Company size label, never an "
+        "associated-employee count. Optional listed_headquarters is the profile's literal "
+        "public Headquarters label, not a verified legal HQ."
     ),
     "get_company_events": (
         "Find live company events such as jobs or financing for one domain. For "

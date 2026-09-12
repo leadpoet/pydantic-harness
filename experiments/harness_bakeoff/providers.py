@@ -958,6 +958,7 @@ class LiveProviderTools:
                         "urls": [linkedin_url],
                         "text": {"maxCharacters": 4_000},
                         "maxAgeHours": 0,
+                        "livecrawlTimeout": 20_000,
                     },
                     fallback_cost=0.002,
                 )
