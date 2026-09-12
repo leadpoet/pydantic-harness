@@ -389,7 +389,7 @@ class HarnessContractTests(unittest.TestCase):
             "Every submitted company needs a verified canonical company_linkedin",
             prompt,
         )
-        self.assertIn("a United States HQ needs evidence-backed state", prompt)
+        self.assertIn("U.S. HQ needs a proven state", prompt)
         self.assertIn("Employee estimates from discovery/profile are shortlist clues", prompt)
         self.assertIn("not bands or current exact staff", prompt)
         self.assertIn("Verify a current public band", prompt)
