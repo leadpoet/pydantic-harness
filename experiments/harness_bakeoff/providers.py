@@ -28,7 +28,7 @@ from .models import validate_companies
 from .linkedin_profile import (
     exa_reported_error,
     linkedin_company_profile_url,
-    project_linkedin_profile_evidence,
+    project_harvest_company_profile_evidence,
 )
 from .tool_contract import validate_job_category
 
@@ -952,26 +952,16 @@ class LiveProviderTools:
                 linkedin_url = linkedin_company_profile_url(stored_linkedin_url)
                 if linkedin_url is None:
                     raise ValueError("stored LinkedIn profile URL is invalid")
-                exa_payload = self._deepline(
-                    "exa_contents",
-                    {
-                        "urls": [linkedin_url],
-                        "text": {"maxCharacters": 4_000},
-                        "maxAgeHours": 0,
-                    },
-                    fallback_cost=0.002,
+                harvest_payload = self._deepline(
+                    "harvestapi_get_company",
+                    {"url": linkedin_url},
+                    fallback_cost=0.003,
                 )
-                if exa_reported_error(exa_payload):
-                    raise RuntimeError("Exa contents reported an error")
-                exa_data = _result_data(exa_payload)
-                results = exa_data.get("results")
-                result = (
-                    next((item for item in results if isinstance(item, dict)), None)
-                    if isinstance(results, list)
-                    else None
-                )
+                harvest_data = _result_data(harvest_payload)
                 profile["linkedin_profile_evidence"] = (
-                    project_linkedin_profile_evidence(linkedin_url, result)
+                    project_harvest_company_profile_evidence(
+                        linkedin_url, domain, harvest_data.get("element")
+                    )
                 )
             except ValueError as exc:
                 errors.append(

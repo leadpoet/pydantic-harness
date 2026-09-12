@@ -41,6 +41,7 @@ _TITLE_EXPANSIONS = {
     "ceo": "chief executive officer",
     "cfo": "chief financial officer",
     "cio": "chief information officer",
+    "ciso": "chief information security officer",
     "cmo": "chief marketing officer",
     "coo": "chief operating officer",
     "cro": "chief revenue officer",
@@ -182,7 +183,15 @@ def _domain(value: Any) -> str:
 
 
 def _company_name(value: Any) -> str:
-    words = _norm(value).split()
+    text = _text(value)
+    # A returned display name may append its own acronym: "Acme Systems (AS)".
+    # Do not strip subsidiaries, locations, or an unrelated parenthetical name.
+    alias = re.fullmatch(r"(.+?)\s*\(([A-Za-z]{2,10})\)", text)
+    if alias:
+        base = _company_name(alias[1])
+        if "".join(word[0] for word in base.split()) == alias[2].casefold():
+            text = base
+    words = _norm(text).split()
     while words and words[-1] in _LEGAL_SUFFIXES:
         words.pop()
     return " ".join(words)
@@ -286,19 +295,22 @@ def _is_current(position: Mapping[str, Any]) -> bool:
 
 
 def _current_positions(profile: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    result: list[Mapping[str, Any]] = []
+    explicit: list[Mapping[str, Any]] = []
     for key in ("currentPosition", "currentPositions", "current_position"):
         current = profile.get(key)
         if isinstance(current, Mapping) and _is_current(current):
-            result.append(current)
+            explicit.append(current)
         elif isinstance(current, Sequence) and not isinstance(
             current, (str, bytes, bytearray)
         ):
-            result.extend(
+            explicit.extend(
                 item
                 for item in current[:10]
                 if isinstance(item, Mapping) and _is_current(item)
             )
+    if explicit:
+        return explicit
+    result: list[Mapping[str, Any]] = []
     experience = profile.get("experience") or profile.get("experiences") or []
     if isinstance(experience, Sequence) and not isinstance(
         experience, (str, bytes, bytearray)
@@ -396,7 +408,12 @@ def _search_company_matches(
 
 def _normalized_title(value: Any) -> str:
     expanded: list[str] = []
-    for word in _norm(value).split():
+    text = re.sub(
+        r"\b(?:[A-Za-z]\.){2,}",
+        lambda match: match[0].replace(".", ""),
+        _text(value),
+    )
+    for word in _norm(text).split():
         expanded.extend(_TITLE_EXPANSIONS.get(word, word).split())
     return " ".join(word for word in expanded if word not in {"and", "of", "the"})
 

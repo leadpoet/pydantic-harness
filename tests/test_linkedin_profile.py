@@ -6,6 +6,7 @@ import pytest
 
 from experiments.harness_bakeoff.linkedin_profile import (
     linkedin_company_profile_url,
+    project_harvest_company_profile_evidence,
     project_linkedin_profile_evidence,
 )
 
@@ -21,6 +22,134 @@ def _result(text: str, **updates: object) -> dict[str, object]:
     }
     result.update(updates)
     return result
+
+
+def _harvest_result(**updates: object) -> dict[str, object]:
+    result: dict[str, object] = {
+        "id": "12345",
+        "name": "Example",
+        "linkedinUrl": "https://www.linkedin.com/company/example/",
+        "website": "https://www.example.com/",
+        "employeeCount": 94,
+        "employeeCountRange": {"start": 51, "end": 200},
+        "pageType": "COMPANY",
+        "pageVerified": True,
+        "locations": [
+            {
+                "headquarter": True,
+                "parsed": {"text": "Boston, MA, United States"},
+            }
+        ],
+    }
+    result.update(updates)
+    return result
+
+
+def test_projects_structured_harvest_company_evidence() -> None:
+    evidence = project_harvest_company_profile_evidence(
+        PROFILE_URL, "example.com", _harvest_result()
+    )
+
+    assert evidence == {
+        "url": "https://www.linkedin.com/company/example/",
+        "title": "Example",
+        "employee_count": "51-200",
+        "employee_count_estimate": 94,
+        "page_verified": True,
+        "listed_headquarters": "Boston, MA, United States",
+        "source": {
+            "provider": "harvestapi",
+            "tool": "harvestapi_get_company",
+            "record_id": "12345",
+        },
+    }
+    assert "quote" not in evidence
+    assert "headquarters_quote" not in evidence
+    assert json.loads(json.dumps(evidence)) == evidence
+
+
+@pytest.mark.parametrize(
+    ("employee_range", "expected"),
+    [
+        ({"start": 0, "end": 1}, "0-1"),
+        ({"start": 2, "end": 10}, "2-10"),
+        ({"start": 11, "end": 50}, "11-50"),
+        ({"start": 51, "end": 200}, "51-200"),
+        ({"start": 201, "end": 500}, "201-500"),
+        ({"start": 501, "end": 1_000}, "501-1,000"),
+        ({"start": 1_001, "end": 5_000}, "1,001-5,000"),
+        ({"start": 5_001, "end": 10_000}, "5,001-10,000"),
+        ({"start": 10_001, "end": None}, "10,001+"),
+    ],
+)
+def test_projects_only_canonical_harvest_employee_bands(
+    employee_range: dict[str, int | None], expected: str
+) -> None:
+    evidence = project_harvest_company_profile_evidence(
+        PROFILE_URL,
+        "example.com",
+        _harvest_result(employeeCountRange=employee_range),
+    )
+
+    assert evidence["employee_count"] == expected
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"employeeCountRange": None},
+        {"employeeCountRange": {"start": "51", "end": "200"}},
+        {"employeeCountRange": {"start": 50, "end": 200}},
+        {"employeeCountRange": {"start": True, "end": 200}},
+    ],
+)
+def test_rejects_missing_or_malformed_harvest_employee_band(
+    updates: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError, match="Company size band is missing"):
+        project_harvest_company_profile_evidence(
+            PROFILE_URL, "example.com", _harvest_result(**updates)
+        )
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"linkedinUrl": "https://www.linkedin.com/company/other/"},
+        {"website": "https://other.example/"},
+        {"website": "https://app.example.com/"},
+        {"website": "ftp://example.com/"},
+        {"pageType": "SCHOOL"},
+    ],
+)
+def test_rejects_wrong_harvest_company_identity(updates: dict[str, object]) -> None:
+    with pytest.raises(ValueError, match="does not match|type is invalid"):
+        project_harvest_company_profile_evidence(
+            PROFILE_URL, "example.com", _harvest_result(**updates)
+        )
+
+
+@pytest.mark.parametrize(
+    "locations",
+    [
+        None,
+        [],
+        [{"headquarter": False, "parsed": {"text": "Wrong office"}}],
+        [{"headquarter": True, "parsed": {"text": "A" * 301}}],
+        [{"headquarter": True, "parsed": {"text": "Bad\nplace"}}],
+    ],
+)
+def test_omits_bad_harvest_headquarters_without_losing_size(
+    locations: object,
+) -> None:
+    evidence = project_harvest_company_profile_evidence(
+        PROFILE_URL,
+        "example.com",
+        _harvest_result(locations=locations),
+    )
+
+    assert evidence["employee_count"] == "51-200"
+    assert "listed_headquarters" not in evidence
 
 
 def test_extracts_only_explicit_company_size_from_about_section() -> None:

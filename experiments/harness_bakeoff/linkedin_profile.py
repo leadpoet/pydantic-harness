@@ -18,6 +18,17 @@ _CANONICAL_EMPLOYEE_BANDS = (
     "5,001-10,000",
     "10,001+",
 )
+_HARVEST_EMPLOYEE_BANDS = {
+    (0, 1): "0-1",
+    (2, 10): "2-10",
+    (11, 50): "11-50",
+    (51, 200): "51-200",
+    (201, 500): "201-500",
+    (501, 1_000): "501-1,000",
+    (1_001, 5_000): "1,001-5,000",
+    (5_001, 10_000): "5,001-10,000",
+    (10_001, None): "10,001+",
+}
 _LINKEDIN_COMPANY_PATH_RE = re.compile(
     r"^/company/(?P<slug>[A-Za-z0-9][A-Za-z0-9._~-]{0,99})/?$"
 )
@@ -136,6 +147,64 @@ def _profile_key(value: Any) -> tuple[str, str] | None:
     return ("linkedin.com", match.group("slug").casefold())
 
 
+def _domain_key(value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip()
+    try:
+        parsed = urlsplit(raw if "://" in raw else "//" + raw)
+        port = parsed.port
+    except ValueError:
+        return None
+    host = (parsed.hostname or "").casefold().rstrip(".")
+    if (
+        not host
+        or parsed.scheme.casefold() not in {"", "http", "https"}
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 80, 443)
+    ):
+        return None
+    return host.removeprefix("www.")
+
+
+def _domains_match(expected: Any, observed: Any) -> bool:
+    expected_domain = _domain_key(expected)
+    observed_domain = _domain_key(observed)
+    if expected_domain is None or observed_domain is None:
+        return False
+    return expected_domain == observed_domain
+
+
+def _harvest_employee_band(value: Any) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    start = value.get("start")
+    end = value.get("end")
+    if isinstance(start, bool) or isinstance(end, bool):
+        return None
+    if not isinstance(start, int) or (end is not None and not isinstance(end, int)):
+        return None
+    return _HARVEST_EMPLOYEE_BANDS.get((start, end))
+
+
+def _harvest_headquarters(value: Any) -> str | None:
+    if not isinstance(value, list):
+        return None
+    for location in value[:100]:
+        if not isinstance(location, dict) or location.get("headquarter") is not True:
+            continue
+        parsed = location.get("parsed")
+        text = parsed.get("text") if isinstance(parsed, dict) else None
+        if isinstance(text, str):
+            text = text.strip()
+            if text and len(text) <= _MAX_HEADQUARTERS_CHARS and not any(
+                ord(character) < 32 or ord(character) == 127 for character in text
+            ):
+                return text
+    return None
+
+
 def _about_section(text: Any) -> str | None:
     if not isinstance(text, str):
         return None
@@ -211,8 +280,56 @@ def project_linkedin_profile_evidence(
     return evidence
 
 
+def project_harvest_company_profile_evidence(
+    requested_url: str, requested_domain: str, result: Any
+) -> dict[str, Any]:
+    """Project strict structured evidence from one Harvest LinkedIn company."""
+
+    if not isinstance(result, dict):
+        raise ValueError("LinkedIn company profile result is missing")
+    result_url = result.get("linkedinUrl")
+    requested_key = _profile_key(requested_url)
+    if requested_key is None or _profile_key(result_url) != requested_key:
+        raise ValueError("LinkedIn company profile URL does not match the request")
+    if str(result.get("pageType") or "").casefold() != "company":
+        raise ValueError("LinkedIn company profile type is invalid")
+    if not _domains_match(requested_domain, result.get("website")):
+        raise ValueError("LinkedIn company profile website does not match the request")
+    employee_count = _harvest_employee_band(result.get("employeeCountRange"))
+    if employee_count is None:
+        raise ValueError("explicit LinkedIn Company size band is missing")
+
+    title = result.get("name")
+    evidence: dict[str, Any] = {
+        "url": str(result_url),
+        "title": str(title).strip()[:_MAX_TITLE_CHARS]
+        if isinstance(title, str)
+        else "",
+        "employee_count": employee_count,
+        "source": {
+            "provider": "harvestapi",
+            "tool": "harvestapi_get_company",
+            "record_id": str(result.get("id") or "")[:300],
+        },
+    }
+    exact_count = result.get("employeeCount")
+    if (
+        isinstance(exact_count, int)
+        and not isinstance(exact_count, bool)
+        and exact_count >= 0
+    ):
+        evidence["employee_count_estimate"] = exact_count
+    if isinstance(result.get("pageVerified"), bool):
+        evidence["page_verified"] = result["pageVerified"]
+    headquarters = _harvest_headquarters(result.get("locations"))
+    if headquarters is not None:
+        evidence["listed_headquarters"] = headquarters
+    return evidence
+
+
 __all__ = [
     "exa_reported_error",
     "linkedin_company_profile_url",
+    "project_harvest_company_profile_evidence",
     "project_linkedin_profile_evidence",
 ]

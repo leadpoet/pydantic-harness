@@ -563,21 +563,24 @@ def test_company_profile_adds_separate_current_linkedin_size_evidence() -> None:
                     }
                 ]
             }
-        elif request.url.path.endswith("/exa_contents/execute"):
+        elif request.url.path.endswith("/harvestapi_get_company/execute"):
             data = {
-                "results": [
-                    {
-                        "url": "https://linkedin.com/company/example/",
-                        "title": "A different display name | LinkedIn",
-                        "text": (
-                            "## About\nBusiness software.\n\nCompany size "
-                            "11-50 employees\nHeadquarters Austin, Texas\n"
-                            "89 associated members\n"
-                            "View all 89 employees\n\n## Employees at Example\n"
-                            "89 employees\n\n## Updates"
-                        ),
-                    }
-                ]
+                "element": {
+                    "id": "company-1",
+                    "name": "Example",
+                    "linkedinUrl": "https://linkedin.com/company/example/",
+                    "website": "https://example.com/",
+                    "employeeCount": 94,
+                    "employeeCountRange": {"start": 11, "end": 50},
+                    "pageType": "COMPANY",
+                    "pageVerified": True,
+                    "locations": [
+                        {
+                            "headquarter": True,
+                            "parsed": {"text": "Austin, Texas"},
+                        }
+                    ],
+                }
             }
         else:
             raise AssertionError(f"unexpected route: {request.url}")
@@ -590,23 +593,26 @@ def test_company_profile_adds_separate_current_linkedin_size_evidence() -> None:
     assert [request.url.path for request in requests] == [
         "/api/v2/integrations/free_simple_company_search/execute",
         "/api/v2/integrations/predictleads_company_financing_events/execute",
-        "/api/v2/integrations/exa_contents/execute",
+        "/api/v2/integrations/harvestapi_get_company/execute",
     ]
     assert json.loads(requests[2].content)["payload"] == {
-        "urls": ["https://linkedin.com/company/example"],
-        "text": {"maxCharacters": 4_000},
-        "maxAgeHours": 0,
+        "url": "https://linkedin.com/company/example",
     }
     assert profile["company"]["employee_count_estimate"] == 89
     assert profile["company"]["linkedin_url"] == "linkedin.com/company/example"
     assert "employee_count" not in profile["company"]
     assert profile["linkedin_profile_evidence"] == {
         "url": "https://linkedin.com/company/example/",
-        "title": "A different display name | LinkedIn",
+        "title": "Example",
         "employee_count": "11-50",
-        "quote": "Company size 11-50 employees",
+        "employee_count_estimate": 94,
+        "page_verified": True,
         "listed_headquarters": "Austin, Texas",
-        "headquarters_quote": "Headquarters Austin, Texas",
+        "source": {
+            "provider": "harvestapi",
+            "tool": "harvestapi_get_company",
+            "record_id": "company-1",
+        },
     }
     assert profile["latest_financing_events"][0]["data"]["returned_count"] == 1
     assert profile["errors"] == []

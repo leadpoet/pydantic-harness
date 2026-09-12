@@ -314,6 +314,14 @@ def test_unicode_company_normalization_preserves_letters_and_accents() -> None:
     assert _company_name("München Software GmbH") == _company_name("Munchen Software")
 
 
+def test_company_normalization_strips_only_a_matching_terminal_acronym() -> None:
+    assert (
+        _company_name("Central Precision Products (CPP)")
+        == "central precision products"
+    )
+    assert _company_name("Acme Systems (West)") == "acme systems west"
+
+
 def test_profile_plural_current_positions_are_supported() -> None:
     profile = _profile()
     profile["currentPositions"] = profile.pop("currentPosition")
@@ -321,6 +329,172 @@ def test_profile_plural_current_positions_are_supported() -> None:
     companies = enrich_contacts(_icp(), [_company()], ScriptedProvider(profile))
 
     assert companies[0]["contact"]["role"] == "VP Sales"
+
+
+def test_explicit_current_position_cannot_be_overridden_by_weaker_experience() -> (
+    None
+):
+    company = {
+        **_company(),
+        "company_name": "Northstar Group plc",
+        "company_website": "https://northstar.example/",
+        "company_linkedin": "",
+    }
+    explicit = {
+        "position": "Chief Operating Officer",
+        "companyName": "Northstar Group",
+        "companyLinkedinUrl": (
+            "https://www.linkedin.com/company/northstar-group-solutions/"
+        ),
+        "company": {
+            "name": "Northstar Group",
+            "website": "https://northstargroup.example/",
+            "linkedinUrl": (
+                "https://www.linkedin.com/company/northstar-group-solutions/"
+            ),
+        },
+        "endDate": {"text": "Present"},
+    }
+    weaker_duplicate = {
+        "position": "Chief Operating Officer",
+        "companyName": "Northstar Group",
+        "companyLinkedinUrl": (
+            "https://www.linkedin.com/company/northstar-group-solutions/"
+        ),
+        "endDate": {"text": "Present"},
+    }
+    profile = _profile(
+        workEmail="ada@northstargroup.example",
+        currentPosition=[explicit],
+        experience=[weaker_duplicate],
+    )
+    calls: list[str] = []
+
+    def provider(tool: str, _payload: dict) -> object:
+        calls.append(tool)
+        if tool == "harvestapi_search_leads":
+            return {
+                "elements": [
+                    {
+                        "linkedinUrl": profile["linkedinUrl"],
+                        "currentPositions": [
+                            {
+                                "position": "Chief Operating Officer",
+                                "companyName": "Northstar Group",
+                                "companyDomain": "northstar.example",
+                            }
+                        ],
+                    }
+                ]
+            }
+        if tool == "harvestapi_get_profile":
+            return {"element": profile}
+        raise AssertionError(f"unexpected provider tool: {tool}")
+
+    original = deepcopy(company)
+    assert enrich_contacts(
+        _icp(
+            target_roles=["Chief Operating Officer"],
+            target_seniority="C-Suite",
+        ),
+        [company],
+        provider,
+    ) == [original]
+    assert calls == ["harvestapi_search_leads", "harvestapi_get_profile"]
+
+
+def test_experience_is_used_when_explicit_current_position_is_absent() -> None:
+    profile = _profile()
+    profile["experience"] = profile.pop("currentPosition")
+
+    companies = enrich_contacts(_icp(), [_company()], ScriptedProvider(profile))
+
+    assert companies[0]["contact"]["email"] == "ada@acme.com"
+
+
+@pytest.mark.parametrize(
+    ("returned_title", "target_role", "seniority"),
+    [
+        ("V.P. of Operations", "VP Operations", "VP+"),
+        ("CISO", "Chief Information Security Officer", "C-Suite"),
+    ],
+)
+def test_common_title_acronyms_pass_the_existing_role_gate(
+    returned_title: str,
+    target_role: str,
+    seniority: str,
+) -> None:
+    position = {**_profile()["currentPosition"][0], "title": returned_title}
+    profile = _profile(currentPosition=[position])
+
+    def provider(tool: str, _payload: dict) -> object:
+        if tool == "harvestapi_search_leads":
+            return {
+                "elements": [
+                    {
+                        "linkedinUrl": profile["linkedinUrl"],
+                        "currentPositions": [position],
+                    }
+                ]
+            }
+        if tool == "harvestapi_get_profile":
+            return {"element": profile}
+        raise AssertionError(f"unexpected provider tool: {tool}")
+
+    companies = enrich_contacts(
+        _icp(target_roles=[target_role], target_seniority=seniority),
+        [_company()],
+        provider,
+    )
+
+    assert companies[0]["contact"]["role"] == returned_title
+
+
+def test_terminal_company_acronym_preserves_company_and_role_gates() -> None:
+    company = {
+        **_company(),
+        "company_name": "Central Precision Products (CPP)",
+        "company_website": "https://cpp.example/",
+        "company_linkedin": (
+            "https://www.linkedin.com/company/central-precision-products/"
+        ),
+    }
+    search_position = {
+        **_profile()["currentPosition"][0],
+        "title": "V.P. of Operations",
+        "companyName": "Central Precision Products",
+        "companyDomain": "cpp.example",
+        "companyLinkedinUrl": "https://www.linkedin.com/company/987654321/",
+    }
+    full_position = {
+        **search_position,
+        "companyLinkedinUrl": (
+            "https://www.linkedin.com/company/central-precision-products/"
+        ),
+    }
+    profile = _profile(
+        currentPosition=[full_position], workEmail="ada@cpp.example"
+    )
+
+    def provider(tool: str, _payload: dict) -> object:
+        if tool == "harvestapi_search_leads":
+            return {
+                "elements": [
+                    {
+                        "linkedinUrl": profile["linkedinUrl"],
+                        "currentPositions": [search_position],
+                    }
+                ]
+            }
+        if tool == "harvestapi_get_profile":
+            return {"element": profile}
+        raise AssertionError(f"unexpected provider tool: {tool}")
+
+    companies = enrich_contacts(
+        _icp(target_roles=["VP Operations"]), [company], provider
+    )
+
+    assert companies[0]["contact"]["email"] == "ada@cpp.example"
 
 
 def test_generic_email_is_skipped_in_favor_of_person_email() -> None:

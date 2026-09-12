@@ -368,29 +368,32 @@ class ProviderFreshnessTests(unittest.TestCase):
                 return {"data": {"rows": [source_row]}}
             if tool == "predictleads_company_financing_events":
                 return {"data": {"data": []}}
-            self.assertEqual(tool, "exa_contents")
+            self.assertEqual(tool, "harvestapi_get_company")
             self.assertEqual(
                 payload,
                 {
-                    "urls": ["https://linkedin.com/company/example"],
-                    "text": {"maxCharacters": 4_000},
-                    "maxAgeHours": 0,
+                    "url": "https://linkedin.com/company/example",
                 },
             )
-            self.assertEqual(kwargs["fallback_cost"], 0.002)
+            self.assertEqual(kwargs["fallback_cost"], 0.003)
             return {
                 "data": {
-                    "results": [
-                        {
-                            "url": "https://linkedin.com/company/example/",
-                            "title": "Another display name | LinkedIn",
-                            "text": (
-                                "## About\nCompany size 51-200 employees\n"
-                                "Headquarters Boston, Massachusetts\n"
-                                "94 associated members\n## Updates"
-                            ),
-                        }
-                    ]
+                    "element": {
+                        "id": "company-1",
+                        "name": "Example",
+                        "linkedinUrl": "https://linkedin.com/company/example/",
+                        "website": "https://example.com/",
+                        "employeeCount": 94,
+                        "employeeCountRange": {"start": 51, "end": 200},
+                        "pageType": "COMPANY",
+                        "pageVerified": True,
+                        "locations": [
+                            {
+                                "headquarter": True,
+                                "parsed": {"text": "Boston, Massachusetts"},
+                            }
+                        ],
+                    }
                 }
             }
 
@@ -407,11 +410,16 @@ class ProviderFreshnessTests(unittest.TestCase):
             profile["linkedin_profile_evidence"],
             {
                 "url": "https://linkedin.com/company/example/",
-                "title": "Another display name | LinkedIn",
+                "title": "Example",
                 "employee_count": "51-200",
-                "quote": "Company size 51-200 employees",
+                "employee_count_estimate": 94,
+                "page_verified": True,
                 "listed_headquarters": "Boston, Massachusetts",
-                "headquarters_quote": "Headquarters Boston, Massachusetts",
+                "source": {
+                    "provider": "harvestapi",
+                    "tool": "harvestapi_get_company",
+                    "record_id": "company-1",
+                },
             },
         )
         self.assertEqual(profile["errors"], [])
