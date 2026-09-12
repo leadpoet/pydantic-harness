@@ -554,3 +554,238 @@ def test_target_role_words_must_remain_in_order() -> None:
     companies = enrich_contacts(icp, [original], call)
 
     assert companies == [original]
+
+
+def test_empty_search_retries_once_with_function_title_and_accepts_valid_contact() -> (
+    None
+):
+    calls: list[tuple[str, dict]] = []
+    search_calls = 0
+
+    def provider(tool: str, payload: dict) -> object:
+        nonlocal search_calls
+        calls.append((tool, deepcopy(payload)))
+        if tool == "harvestapi_search_leads":
+            search_calls += 1
+            if search_calls == 1:
+                return {"result": {"data": {"elements": [], "status": "OK"}}}
+            return {
+                "result": {
+                    "data": {
+                        "elements": [
+                            {
+                                "linkedinUrl": "https://www.linkedin.com/in/ada-lovelace/",
+                                "currentPositions": _profile()["currentPosition"],
+                            }
+                        ],
+                        "status": "OK",
+                    }
+                }
+            }
+        if tool == "harvestapi_get_profile":
+            return {"result": {"data": {"element": _profile()}}}
+        raise AssertionError(f"unexpected provider tool: {tool}")
+
+    companies = enrich_contacts(_icp(), [_company()], provider)
+
+    assert companies[0]["contact"]["email"] == "ada@acme.com"
+    search_payloads = [
+        payload for tool, payload in calls if tool == "harvestapi_search_leads"
+    ]
+    assert search_payloads == [
+        {
+            "currentJobTitles": "Vice President of Sales",
+            "page": 1,
+            "currentCompanies": "https://www.linkedin.com/company/acme/",
+            "locations": "San Francisco",
+        },
+        {
+            "currentJobTitles": "sales",
+            "page": 1,
+            "currentCompanies": "https://www.linkedin.com/company/acme/",
+            "locations": "San Francisco",
+        },
+    ]
+    assert [tool for tool, _payload in calls] == [
+        "harvestapi_search_leads",
+        "harvestapi_search_leads",
+        "harvestapi_get_profile",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_profile_calls"),
+    [
+        ("wrong_company", 0),
+        ("wrong_role", 0),
+        ("wrong_location", 1),
+        ("wrong_email", 1),
+    ],
+)
+def test_fallback_never_attaches_mismatched_contact(
+    failure_kind: str, expected_profile_calls: int
+) -> None:
+    calls: list[str] = []
+    search_calls = 0
+    position = deepcopy(_profile()["currentPosition"][0])
+    profile = _profile()
+    if failure_kind == "wrong_company":
+        position.update(
+            {
+                "companyName": "Other Company",
+                "companyDomain": "other.example",
+                "companyLinkedinUrl": "https://www.linkedin.com/company/other/",
+            }
+        )
+    elif failure_kind == "wrong_role":
+        position["title"] = "Sales Manager"
+    elif failure_kind == "wrong_location":
+        profile["location"] = {
+            "countryCode": "GB",
+            "parsed": {"countryFull": "United Kingdom", "city": "London"},
+        }
+    elif failure_kind == "wrong_email":
+        profile["workEmail"] = ""
+
+    def provider(tool: str, _payload: dict) -> object:
+        nonlocal search_calls
+        calls.append(tool)
+        if tool == "harvestapi_search_leads":
+            search_calls += 1
+            if search_calls == 1:
+                return {"data": {"elements": [], "status": "OK"}}
+            return {
+                "data": {
+                    "elements": [
+                        {
+                            "linkedinUrl": "https://www.linkedin.com/in/candidate/",
+                            "currentPositions": [position],
+                        }
+                    ],
+                    "status": "OK",
+                }
+            }
+        if tool == "harvestapi_get_profile":
+            return {"data": {"element": profile}}
+        raise AssertionError(f"unexpected provider tool: {tool}")
+
+    original = _company()
+    assert enrich_contacts(_icp(), [original], provider) == [original]
+    assert calls.count("harvestapi_search_leads") == 2
+    assert calls.count("harvestapi_get_profile") == expected_profile_calls
+
+
+def test_empty_search_without_safe_function_terms_does_not_retry() -> None:
+    calls: list[tuple[str, dict]] = []
+
+    def provider(tool: str, payload: dict) -> object:
+        calls.append((tool, deepcopy(payload)))
+        return {"data": {"elements": [], "status": "OK"}}
+
+    original = _company()
+    icp = _icp(
+        target_roles=["Chief Executive Officer"], target_seniority="C-level"
+    )
+
+    assert enrich_contacts(icp, [original], provider) == [original]
+    assert len(calls) == 1
+
+
+def test_fallback_deduplicates_function_terms_from_known_seniority_titles() -> None:
+    calls: list[tuple[str, dict]] = []
+
+    def provider(tool: str, payload: dict) -> object:
+        calls.append((tool, deepcopy(payload)))
+        return {"data": {"elements": [], "status": "OK"}}
+
+    original = _company()
+    icp = _icp(
+        target_roles=["Chief Revenue Officer", "Vice President of Revenue"],
+        target_seniority="VP+",
+    )
+
+    assert enrich_contacts(icp, [original], provider) == [original]
+    assert [payload["currentJobTitles"] for _tool, payload in calls] == [
+        "Chief Revenue Officer,Vice President of Revenue",
+        "revenue",
+    ]
+
+
+def test_nonempty_first_search_does_not_retry() -> None:
+    provider = ScriptedProvider()
+
+    companies = enrich_contacts(_icp(), [_company()], provider)
+
+    assert companies[0]["contact"]["email"] == "ada@acme.com"
+    assert [tool for tool, _payload in provider.calls].count(
+        "harvestapi_search_leads"
+    ) == 1
+
+
+def test_empty_fallback_search_runs_at_most_once() -> None:
+    calls: list[tuple[str, dict]] = []
+
+    def provider(tool: str, payload: dict) -> object:
+        calls.append((tool, deepcopy(payload)))
+        return {"data": {"elements": [], "status": "OK"}}
+
+    original = _company()
+    assert enrich_contacts(_icp(), [original], provider) == [original]
+    assert [payload["currentJobTitles"] for _tool, payload in calls] == [
+        "Vice President of Sales",
+        "sales",
+    ]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {
+            "ok": False,
+            "error": "provider unavailable",
+            "data": {"elements": []},
+        },
+        {"data": {"elements": [], "status": 500}},
+        {"data": {"elements": [], "status": []}},
+        {"data": {"elements": [], "status": {}}},
+        {
+            "ok": False,
+            "error": "provider unavailable",
+            "data": {"elements": [], "status": "OK"},
+        },
+    ],
+)
+def test_error_response_with_empty_collection_does_not_retry(response: dict) -> None:
+    calls = 0
+
+    def provider(_tool: str, _payload: dict) -> object:
+        nonlocal calls
+        calls += 1
+        return response
+
+    original = _company()
+    assert enrich_contacts(_icp(), [original], provider) == [original]
+    assert calls == 1
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "provider call limit exhausted",
+        "provider cost limit exhausted",
+        "contact provider deadline reached",
+    ],
+)
+def test_fallback_limit_exception_keeps_company_without_contact(message: str) -> None:
+    calls = 0
+
+    def provider(_tool: str, _payload: dict) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {"data": {"elements": [], "status": "OK"}}
+        raise RuntimeError(message)
+
+    original = _company()
+    assert enrich_contacts(_icp(), [original], provider) == [original]
+    assert calls == 2

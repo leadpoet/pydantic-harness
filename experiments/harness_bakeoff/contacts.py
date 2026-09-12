@@ -49,6 +49,24 @@ _TITLE_EXPANSIONS = {
     "svp": "senior vice president",
     "vp": "vice president",
 }
+_SENIORITY_BOILERPLATE = {
+    "c_level": frozenset(
+        {
+            "chief",
+            "executive",
+            "founder",
+            "managing",
+            "officer",
+            "owner",
+            "partner",
+            "president",
+        }
+    ),
+    "vp": frozenset({"executive", "president", "senior", "vice"}),
+    "head": frozenset({"head"}),
+    "director": frozenset({"director", "executive", "managing", "senior"}),
+    "manager": frozenset({"manager", "senior"}),
+}
 _LEGAL_SUFFIXES = frozenset(
     {
         "co",
@@ -188,11 +206,24 @@ def _company_name(value: Any) -> str:
     return " ".join(words)
 
 
-def _unwrap(value: Any) -> Any:
+def _unwrap(value: Any, *, require_success: bool = False) -> Any:
     current = value
     for _ in range(8):
         if not isinstance(current, Mapping):
             return current
+        if require_success:
+            status = current.get("status")
+            if (
+                current.get("ok") is False
+                or current.get("success") is False
+                or bool(current.get("error"))
+                or (
+                    isinstance(status, str)
+                    and status.strip().casefold()
+                    in {"error", "failed", "failure"}
+                )
+            ):
+                return None
         moved = False
         for key in (
             "toolResponse",
@@ -479,6 +510,16 @@ def _role_matches(title: str, targets: Sequence[str], requested_seniority: Any) 
     return False
 
 
+def _functional_title(value: Any) -> str:
+    """Keep the role function while removing recognized seniority boilerplate."""
+
+    normalized = _normalized_title(value)
+    boilerplate = _SENIORITY_BOILERPLATE.get(_seniority(value))
+    if not normalized or boilerplate is None:
+        return ""
+    return " ".join(word for word in normalized.split() if word not in boilerplate)
+
+
 def _profile_location(profile: Mapping[str, Any]) -> dict[str, str]:
     location = profile.get("location")
     location = location if isinstance(location, Mapping) else {}
@@ -636,6 +677,43 @@ def _search_request(
     return request
 
 
+def _fallback_search_request(
+    icp: Mapping[str, Any], company: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    request = _search_request(icp, company)
+    roles: list[str] = []
+    seen: set[str] = set()
+    for target in _bounded_strings(icp.get("target_roles"), limit=70):
+        role = _functional_title(target)
+        if role and role not in seen:
+            seen.add(role)
+            roles.append(role)
+    fallback_titles = ",".join(roles)
+    if not fallback_titles or fallback_titles.casefold() == str(
+        request["currentJobTitles"]
+    ).casefold():
+        return None
+    request["currentJobTitles"] = fallback_titles
+    return request
+
+
+def _successful_empty_search(value: Any) -> bool:
+    unwrapped = _unwrap(value, require_success=True)
+    if not isinstance(unwrapped, Mapping):
+        return False
+    elements = unwrapped.get("elements")
+    status = unwrapped.get("status")
+    return (
+        (
+            (isinstance(status, str) and status.strip().casefold() == "ok")
+            or (type(status) is int and status == 200)
+        )
+        and isinstance(elements, Sequence)
+        and not isinstance(elements, (str, bytes, bytearray))
+        and not elements
+    )
+
+
 def _contact_from_profile(
     profile: Mapping[str, Any],
     *,
@@ -697,6 +775,11 @@ def _find_contact(
 ) -> dict[str, Any] | None:
     search = call_provider("harvestapi_search_leads", _search_request(icp, company))
     candidates = _profiles(_unwrap(search))
+    if not candidates and _successful_empty_search(search):
+        fallback = _fallback_search_request(icp, company)
+        if fallback is not None:
+            search = call_provider("harvestapi_search_leads", fallback)
+            candidates = _profiles(_unwrap(search))
     expected = _expected_company(company)
     targets = _bounded_strings(icp.get("target_roles"), limit=70)
     seniority = icp.get("target_seniority")
