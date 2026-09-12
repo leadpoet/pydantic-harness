@@ -74,9 +74,53 @@ View all 89 employees
         "Company size\n51-200 employees\n## Updates",
     ],
 )
-def test_rejects_counts_without_about_section_company_size_label(text: str) -> None:
-    with pytest.raises(ValueError, match="Company size band is missing"):
-        project_linkedin_profile_evidence(PROFILE_URL, _result(text))
+def test_omits_counts_without_about_section_company_size_label(text: str) -> None:
+    evidence = project_linkedin_profile_evidence(PROFILE_URL, _result(text))
+
+    assert evidence == {
+        "url": "https://linkedin.com/company/example/",
+        "title": "Unrelated name | LinkedIn",
+    }
+
+
+def test_projects_headquarters_independently_when_company_size_is_missing() -> None:
+    evidence = project_linkedin_profile_evidence(
+        PROFILE_URL,
+        _result(
+            "## About\nBusiness software.\nHeadquarters\nBoston, Massachusetts\n"
+            "## Updates",
+            title="Example | LinkedIn",
+        ),
+    )
+
+    assert evidence == {
+        "url": "https://linkedin.com/company/example/",
+        "title": "Example | LinkedIn",
+        "listed_headquarters": "Boston, Massachusetts",
+        "headquarters_quote": "Headquarters\nBoston, Massachusetts",
+    }
+    assert "employee_count" not in evidence
+    assert "quote" not in evidence
+
+
+def test_generic_title_is_untrusted_metadata_without_proof_flags() -> None:
+    evidence = project_linkedin_profile_evidence(
+        PROFILE_URL,
+        _result(
+            "## About\nBusiness software.\n## Updates",
+            title="LinkedIn: Log In or Sign Up",
+        ),
+    )
+
+    assert evidence == {
+        "url": "https://linkedin.com/company/example/",
+        "title": "LinkedIn: Log In or Sign Up",
+    }
+    assert not any(
+        marker in key
+        for key in evidence
+        for marker in ("match", "proven", "verified", "valid")
+    )
 
 
 @pytest.mark.parametrize(
@@ -143,6 +187,22 @@ def test_rejects_result_from_another_linkedin_company() -> None:
                 url="also not a profile",
             ),
         )
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"title": ""},
+        {"title": "   "},
+        {"text": ""},
+        {"text": "\n\t"},
+    ],
+)
+def test_rejects_empty_current_profile_fields(updates: dict[str, str]) -> None:
+    result = _result("## About\nBusiness software.\n## Updates")
+    result.update(updates)
+    with pytest.raises(ValueError, match="title is missing|text is missing"):
+        project_linkedin_profile_evidence(PROFILE_URL, result)
 
 
 def test_title_and_source_quote_have_fixed_output_limits() -> None:

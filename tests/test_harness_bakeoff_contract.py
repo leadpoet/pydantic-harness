@@ -389,14 +389,20 @@ class HarnessContractTests(unittest.TestCase):
             "Every submitted company needs a verified canonical company_linkedin",
             prompt,
         )
-        self.assertIn("for a United States HQ", prompt)
-        self.assertIn("evidence-backed state", prompt)
+        self.assertIn("a United States HQ needs evidence-backed state", prompt)
         self.assertIn("Employee estimates from discovery/profile are shortlist clues", prompt)
         self.assertIn("not bands or current exact staff", prompt)
         self.assertIn("Verify a current public band", prompt)
         self.assertIn("never infer it from an estimate", prompt)
         self.assertIn("only the supported band", prompt)
         self.assertIn("never an exact estimate", prompt)
+        self.assertIn("linkedin_profile_evidence fields stand alone", prompt)
+        self.assertIn("never generic login/sign-up", prompt)
+        self.assertIn(
+            "missing employee_count/quote needs other current proof",
+            prompt,
+        )
+        self.assertIn("listed_headquarters proves only its literal label", prompt)
 
     def test_expansion_uses_original_event_and_separates_planned_entry(self) -> None:
         icp = {

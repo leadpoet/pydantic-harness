@@ -184,7 +184,7 @@ def _headquarters_from_about(text: Any) -> tuple[str, str] | None:
 def project_linkedin_profile_evidence(
     requested_url: str, result: Any
 ) -> dict[str, str]:
-    """Project an explicit LinkedIn About-section company-size label."""
+    """Project independently present fields from one current LinkedIn page."""
 
     if not isinstance(result, dict):
         raise ValueError("LinkedIn profile result is missing")
@@ -192,20 +192,20 @@ def project_linkedin_profile_evidence(
     requested_key = _profile_key(requested_url)
     if requested_key is None or _profile_key(result_url) != requested_key:
         raise ValueError("LinkedIn profile result URL does not match the request")
-    extracted = _company_size_from_about(result.get("text"))
-    if extracted is None:
-        raise ValueError("explicit LinkedIn Company size band is missing")
-    employee_count, quote = extracted
     title = result.get("title")
+    text = result.get("text")
+    if not isinstance(title, str) or not title.strip():
+        raise ValueError("LinkedIn profile result title is missing")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("LinkedIn profile result text is missing")
     evidence = {
         "url": str(result_url),
-        "title": str(title).strip()[:_MAX_TITLE_CHARS]
-        if isinstance(title, str)
-        else "",
-        "employee_count": employee_count,
-        "quote": quote,
+        "title": title.strip()[:_MAX_TITLE_CHARS],
     }
-    headquarters = _headquarters_from_about(result.get("text"))
+    extracted = _company_size_from_about(text)
+    if extracted is not None:
+        evidence["employee_count"], evidence["quote"] = extracted
+    headquarters = _headquarters_from_about(text)
     if headquarters is not None:
         evidence["listed_headquarters"], evidence["headquarters_quote"] = headquarters
     return evidence
