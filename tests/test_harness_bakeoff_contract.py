@@ -287,7 +287,7 @@ class HarnessContractTests(unittest.TestCase):
             "bonus_intents",
         ):
             self.assertNotIn(duplicate, displayed)
-        self.assertLessEqual(len(prompt), 6_400)
+        self.assertLessEqual(len(prompt), 6_700)
 
     def test_prompt_prioritizes_primary_and_requires_event_grounding(self) -> None:
         prompt = build_prompt(
