@@ -115,6 +115,8 @@ _STORED_EMPLOYEE_COUNT_RE = re.compile(
 )
 _MAX_JOB_DESCRIPTION_CHARS = 1_000
 _MAX_JOB_DESCRIPTION_SOURCE_CHARS = 20_000
+_MAX_DEEPLINE_CALLS = 30
+_DEEPLINE_QUOTA_ERRORS = frozenset({"budget_exhausted", "budget_refused"})
 _HTML_BLOCK_RE = re.compile(
     r"<(script|style)\b[^>]*>.*?</\1\s*>", re.IGNORECASE | re.DOTALL
 )
@@ -504,12 +506,33 @@ class ArenaToolClient:
     def __init__(self, timeout: float = 90.0, client: httpx.Client | None = None):
         self.timeout = max(1.0, min(float(timeout), 120.0))
         self.allow_contacts = False
+        self.deepline_calls = 0
+        self._deepline_call_limit = _MAX_DEEPLINE_CALLS
+        self._deepline_quota_error = ""
         self._owns_client = client is None
         self._client = client or httpx.Client(
             transport=httpx.HTTPTransport(uds=arena_socket_path()),
             timeout=httpx.Timeout(self.timeout),
             follow_redirects=False,
             trust_env=False,
+        )
+
+    @property
+    def deepline_call_limit(self) -> int:
+        return self._deepline_call_limit
+
+    @deepline_call_limit.setter
+    def deepline_call_limit(self, maximum: int) -> None:
+        if type(maximum) is not int or not 1 <= maximum <= _MAX_DEEPLINE_CALLS:
+            raise ValueError(
+                f"Arena Deepline call limit must be from 1 to {_MAX_DEEPLINE_CALLS}"
+            )
+        self._deepline_call_limit = maximum
+
+    @property
+    def deepline_limit_reached(self) -> bool:
+        return bool(self._deepline_quota_error) or (
+            self.deepline_calls >= self.deepline_call_limit
         )
 
     def close(self) -> None:
@@ -549,11 +572,21 @@ class ArenaToolClient:
         return payload
 
     def _deepline(self, tool: str, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._json_request(
-            "POST",
-            f"http://code.deepline.com/api/v2/integrations/{tool}/execute",
-            body={"payload": payload},
-        )
+        if self._deepline_quota_error:
+            raise RuntimeError(self._deepline_quota_error)
+        if self.deepline_calls >= self.deepline_call_limit:
+            raise RuntimeError("Arena Deepline call limit reached")
+        self.deepline_calls += 1
+        try:
+            return self._json_request(
+                "POST",
+                f"http://code.deepline.com/api/v2/integrations/{tool}/execute",
+                body={"payload": payload},
+            )
+        except RuntimeError as exc:
+            if str(exc) in _DEEPLINE_QUOTA_ERRORS:
+                self._deepline_quota_error = str(exc)
+            raise
 
     def _contact_provider(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if tool == "harvestapi_get_profile":

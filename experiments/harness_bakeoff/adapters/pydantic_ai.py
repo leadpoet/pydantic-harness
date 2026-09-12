@@ -53,6 +53,7 @@ _ARENA_FINALIZE_RESERVE_SECONDS = 75.0
 _CONTACT_RESERVE_SECONDS = 45.0
 _CONTACT_SUBMIT_RESERVE_SECONDS = 2.0
 _CONTACT_MIN_CALL_SECONDS = 1.0
+_ARENA_CONTACT_CALL_RESERVE = 5
 _ARENA_REQUEST_OUTPUT_TOKENS = 4_096
 _RUN_OUTPUT_TOKENS_LIMIT = 15_000
 _FINALIZE_MARKER = "[research-budget-reserve]"
@@ -223,10 +224,14 @@ def _bounded_history_tool_result(value: Any) -> Any:
 
 
 def _finalization_due(
-    usage: RunUsage, *, finalize_at: float | None = None
+    usage: RunUsage,
+    *,
+    finalize_at: float | None = None,
+    force_finalize: bool = False,
 ) -> bool:
     return (
-        usage.input_tokens >= _FINALIZE_INPUT_TOKENS
+        force_finalize
+        or usage.input_tokens >= _FINALIZE_INPUT_TOKENS
         or usage.requests >= _FINALIZE_REQUESTS
         or usage.tool_calls >= _FINALIZE_TOOL_CALLS
         or (finalize_at is not None and time.monotonic() >= finalize_at)
@@ -238,6 +243,7 @@ def _process_history(
     history: list[messages.ModelMessage],
     *,
     finalize_at: float | None = None,
+    force_finalize: bool = False,
 ) -> list[messages.ModelMessage]:
     """Project old tool payloads and add one native final-output warning."""
 
@@ -280,7 +286,11 @@ def _process_history(
         ]
         processed.append(dataclasses.replace(message, parts=parts))
 
-    if _finalization_due(context.usage, finalize_at=finalize_at):
+    if _finalization_due(
+        context.usage,
+        finalize_at=finalize_at,
+        force_finalize=force_finalize,
+    ):
         already_warned = any(
             isinstance(part, messages.UserPromptPart)
             and isinstance(part.content, str)
@@ -306,12 +316,17 @@ def _prepare_research_tools(
     tool_definitions: list[ToolDefinition],
     *,
     finalize_at: float | None = None,
+    force_finalize: bool = False,
 ) -> list[ToolDefinition]:
     """Leave only the output tool available once the final-output reserve starts."""
 
     return (
         []
-        if _finalization_due(context.usage, finalize_at=finalize_at)
+        if _finalization_due(
+            context.usage,
+            finalize_at=finalize_at,
+            force_finalize=force_finalize,
+        )
         else tool_definitions
     )
 
@@ -447,6 +462,7 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
     )
     model_deadline = run_deadline - contact_reserve
     tool_client: Any = None
+    arena_deepline_call_limit: int | None = None
     arena_http_client: httpx.AsyncClient | None = None
 
     async def close_resources() -> None:
@@ -462,6 +478,10 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
 
             tool_client = ArenaToolClient(timeout=tool_timeout)
             tool_client.allow_contacts = contact_enabled
+            arena_deepline_call_limit = tool_client.deepline_call_limit
+            tool_client.deepline_call_limit = arena_deepline_call_limit - (
+                _ARENA_CONTACT_CALL_RESERVE if contact_enabled else 0
+            )
             arena_http_client = arena_openrouter_http_client(timeout=120.0)
             openai_client = AsyncOpenAI(
                 api_key=api_key,
@@ -551,13 +571,25 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
     def process_history(
         context: RunContext[Any], history: list[messages.ModelMessage]
     ) -> list[messages.ModelMessage]:
-        return _process_history(context, history, finalize_at=arena_finalize_at)
+        return _process_history(
+            context,
+            history,
+            finalize_at=arena_finalize_at,
+            force_finalize=(
+                arena_mode and tool_client.deepline_limit_reached
+            ),
+        )
 
     def prepare_research_tools(
         context: RunContext[Any], tool_definitions: list[ToolDefinition]
     ) -> list[ToolDefinition]:
         return _prepare_research_tools(
-            context, tool_definitions, finalize_at=arena_finalize_at
+            context,
+            tool_definitions,
+            finalize_at=arena_finalize_at,
+            force_finalize=(
+                arena_mode and tool_client.deepline_limit_reached
+            ),
         )
 
     model_settings: OpenRouterModelSettings = {
@@ -658,6 +690,8 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
             result.output.model_dump(mode="json"), max_companies
         )
         companies = _filter_explicit_stage_conflicts(icp, companies)
+        if arena_deepline_call_limit is not None:
+            tool_client.deepline_call_limit = arena_deepline_call_limit
         contact_call = _DeadlineProviderCall(budget.call, tool_client, run_deadline)
         companies = enrich_contacts(icp, companies, contact_call)
         companies = validate_companies(
@@ -671,6 +705,8 @@ async def _run(icp: dict[str, Any]) -> list[dict[str, Any]]:
         LAST_USAGE.clear()
         LAST_USAGE.update(json.loads(json.dumps(usage, default=str)))
         LAST_USAGE["provider_calls"] = budget.calls
+        if arena_mode:
+            LAST_USAGE["deepline_calls"] = tool_client.deepline_calls
 
 
 def run_icp(icp: dict[str, Any]) -> list[dict[str, Any]]:

@@ -15,7 +15,7 @@ from arena_transport import (
     ArenaToolClient,
     strip_arena_request_headers,
 )
-from harness import run_icp
+from harness import get_last_usage, run_icp
 
 
 def test_arena_transport_uses_credential_free_approved_routes() -> None:
@@ -536,6 +536,192 @@ def test_company_profile_preserves_arena_budget_rejection(error_code: str) -> No
     with pytest.raises(RuntimeError, match=error_code):
         tools.get_company_profile({"domain": "example.com"})
     assert calls == 1
+
+
+def test_raw_deepline_research_limit_preserves_five_contact_calls() -> None:
+    requests: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/free_simple_company_search/execute"):
+            data = {
+                "rows": [
+                    {
+                        "domain": "example.com",
+                        "linkedin_url": "https://www.linkedin.com/company/example/",
+                    }
+                ]
+            }
+        elif request.url.path.endswith("/exa_search/execute"):
+            data = {"results": []}
+        else:
+            data = {"status": "ok", "elements": []}
+        return httpx.Response(
+            200,
+            request=request,
+            json={"result": {"data": data}},
+        )
+
+    tools = ArenaToolClient(client=httpx.Client(transport=httpx.MockTransport(handle)))
+    tools.deepline_call_limit = 25
+    for index in range(24):
+        tools.search_web({"query": f"candidate {index}"})
+
+    profile = tools.get_company_profile({"domain": "example.com"})
+    tools.get_company_events(
+        {
+            "domain": "example.com",
+            "categories": ["HIRING", "FUNDING", "NEWS"],
+        }
+    )
+
+    assert profile["company"]["domain"] == "example.com"
+    assert tools.deepline_calls == 25
+    assert tools.deepline_limit_reached is True
+    assert len(requests) == 25
+
+    tools.deepline_call_limit = 30
+    contact_request = {
+        "currentCompanies": "https://www.linkedin.com/company/example/",
+        "currentJobTitles": "Vice President of Sales",
+        "page": 1,
+    }
+    for _ in range(5):
+        tools.call("harvestapi_search_leads", contact_request)
+
+    assert tools.deepline_calls == 30
+    assert len(requests) == 30
+    with pytest.raises(RuntimeError, match="Arena Deepline call limit reached"):
+        tools.call("harvestapi_search_leads", contact_request)
+    assert len(requests) == 30
+
+
+def test_arena_without_contact_reserve_can_use_all_thirty_raw_calls() -> None:
+    requests: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            request=request,
+            json={"result": {"data": {"results": []}}},
+        )
+
+    tools = ArenaToolClient(client=httpx.Client(transport=httpx.MockTransport(handle)))
+    for index in range(30):
+        tools.search_web({"query": f"candidate {index}"})
+
+    assert tools.deepline_calls == 30
+    assert len(requests) == 30
+    with pytest.raises(RuntimeError, match="Arena Deepline call limit reached"):
+        tools.search_web({"query": "one call too many"})
+    assert len(requests) == 30
+
+
+@pytest.mark.parametrize("error_code", ["budget_refused", "budget_exhausted"])
+def test_caught_arena_budget_error_stops_later_raw_calls(error_code: str) -> None:
+    requests: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            402,
+            request=request,
+            json={"error": {"code": error_code}},
+        )
+
+    tools = ArenaToolClient(client=httpx.Client(transport=httpx.MockTransport(handle)))
+    result = tools.get_company_events(
+        {
+            "domain": "example.com",
+            "categories": ["HIRING", "FUNDING", "NEWS"],
+        }
+    )
+
+    assert len(result["errors"]) == 3
+    assert tools.deepline_calls == 1
+    assert tools.deepline_limit_reached is True
+    with pytest.raises(RuntimeError, match=error_code):
+        tools.search_web({"query": "must stay local"})
+    assert len(requests) == 1
+
+
+def test_profile_caught_arena_budget_error_stops_later_raw_calls() -> None:
+    requests: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/free_simple_company_search/execute"):
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "result": {
+                        "data": {
+                            "rows": [
+                                {
+                                    "domain": "example.com",
+                                    "linkedin_url": (
+                                        "https://www.linkedin.com/company/example/"
+                                    ),
+                                }
+                            ]
+                        }
+                    }
+                },
+            )
+        if request.url.path.endswith(
+            "/predictleads_company_financing_events/execute"
+        ):
+            return httpx.Response(
+                200,
+                request=request,
+                json={"result": {"data": {"data": []}}},
+            )
+        return httpx.Response(
+            402,
+            request=request,
+            json={"error": {"code": "budget_refused"}},
+        )
+
+    tools = ArenaToolClient(client=httpx.Client(transport=httpx.MockTransport(handle)))
+    profile = tools.get_company_profile({"domain": "example.com"})
+
+    assert profile["company"]["domain"] == "example.com"
+    assert profile["errors"][-1] == {
+        "source": "linkedin_profile_evidence",
+        "error": "profile fetch failed: RuntimeError",
+    }
+    assert tools.deepline_calls == 3
+    assert tools.deepline_limit_reached is True
+    with pytest.raises(RuntimeError, match="budget_refused"):
+        tools.search_web({"query": "must stay local"})
+    assert len(requests) == 3
+
+
+def test_caught_nonquota_error_does_not_latch_deepline_calls() -> None:
+    requests: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(500, request=request, json={"error": {}})
+        return httpx.Response(
+            200,
+            request=request,
+            json={"result": {"data": {"data": [], "results": []}}},
+        )
+
+    tools = ArenaToolClient(client=httpx.Client(transport=httpx.MockTransport(handle)))
+    result = tools.get_company_events(
+        {"domain": "example.com", "categories": ["HIRING", "FUNDING"]}
+    )
+    tools.search_web({"query": "later request remains allowed"})
+
+    assert len(result["errors"]) == 1
+    assert tools.deepline_calls == 3
+    assert tools.deepline_limit_reached is False
+    assert len(requests) == 3
 
 
 def test_company_profile_adds_separate_current_linkedin_size_evidence() -> None:
@@ -1236,6 +1422,9 @@ def test_public_harness_uses_pydantic_ai_without_a_provider_key(monkeypatch) -> 
     class FakeArenaTools:
         def __init__(self, timeout: float = 90.0) -> None:
             self.timeout = timeout
+            self.deepline_calls = 0
+            self.deepline_call_limit = 30
+            self.deepline_limit_reached = False
 
         def call(self, name, arguments):
             assert name == "submit_companies"
@@ -1336,6 +1525,9 @@ def test_public_harness_returns_one_fresh_batched_tool_request_sequentially(
     class FakeArenaTools:
         def __init__(self, timeout: float = 90.0) -> None:
             self.timeout = timeout
+            self.deepline_calls = 0
+            self.deepline_call_limit = 30
+            self.deepline_limit_reached = False
 
         def call(self, name, arguments):
             nonlocal active_calls, max_active_calls
@@ -1381,6 +1573,112 @@ def test_public_harness_returns_one_fresh_batched_tool_request_sequentially(
     )
     assert research_calls == ["candidate 0", "candidate 1", "candidate 2"]
     assert max_active_calls == 1
+
+
+def test_arena_raw_research_limit_finalizes_after_current_batch(monkeypatch) -> None:
+    model_requests: list[dict] = []
+    provider_requests: list[httpx.Request] = []
+
+    def completion(tool_calls: list[dict], generation: int) -> dict:
+        return {
+            "id": f"generation-{generation}",
+            "object": "chat.completion",
+            "created": generation,
+            "model": "openai/gpt-5.5",
+            "provider": "OpenAI",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": tool_calls,
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+
+    async def model_response(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        model_requests.append(body)
+        if len(model_requests) == 1:
+            calls = [
+                {
+                    "id": f"research-{index}",
+                    "type": "function",
+                    "function": {
+                        "name": "search_web",
+                        "arguments": json.dumps({"query": f"candidate {index}"}),
+                    },
+                }
+                for index in range(3)
+            ]
+        else:
+            calls = [
+                {
+                    "id": "submit-1",
+                    "type": "function",
+                    "function": {
+                        "name": "submit_companies",
+                        "arguments": '{"companies":[]}',
+                    },
+                }
+            ]
+        return httpx.Response(
+            200,
+            request=request,
+            json=completion(calls, len(model_requests)),
+        )
+
+    def provider_response(request: httpx.Request) -> httpx.Response:
+        provider_requests.append(request)
+        return httpx.Response(
+            200,
+            request=request,
+            json={"result": {"data": {"results": []}}},
+        )
+
+    tools = ArenaToolClient(
+        client=httpx.Client(transport=httpx.MockTransport(provider_response))
+    )
+    tools.deepline_calls = 24
+
+    def model_client(timeout: float) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            transport=ArenaOpenRouterTransport(
+                inner=httpx.MockTransport(model_response)
+            ),
+        )
+
+    monkeypatch.setenv("LAB_ARENA_WORKER_SOCKET", "/tmp/unused-worker.sock")
+    monkeypatch.setenv("BAKEOFF_OPENROUTER_MODEL", "openai/gpt-5.5")
+    monkeypatch.setenv("BAKEOFF_RUN_TIMEOUT_SECONDS", "130")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    with patch.object(arena_transport, "ArenaToolClient", lambda timeout: tools):
+        with patch.object(
+            arena_transport, "arena_openrouter_http_client", model_client
+        ):
+            assert run_icp(
+                {
+                    "icp_id": "today",
+                    "contact_policy": "contacts_v1",
+                    "target_roles": ["Vice President of Sales"],
+                }
+            ) == []
+
+    assert len(model_requests) == 2
+    assert len(provider_requests) == 1
+    assert tools.deepline_calls == 25
+    assert tools.deepline_call_limit == 30
+    second_tools = {
+        tool["function"]["name"] for tool in model_requests[1].get("tools", [])
+    }
+    assert second_tools == {"submit_companies"}
+    assert "[research-budget-reserve]" in json.dumps(model_requests[1]["messages"])
+    assert get_last_usage()["provider_calls"] == 3
+    assert get_last_usage()["deepline_calls"] == 25
 
 
 def test_arena_company_limit_is_forwarded_to_the_prompt(monkeypatch) -> None:
@@ -1431,6 +1729,9 @@ def test_arena_company_limit_is_forwarded_to_the_prompt(monkeypatch) -> None:
     class FakeArenaTools:
         def __init__(self, timeout: float = 90.0) -> None:
             self.timeout = timeout
+            self.deepline_calls = 0
+            self.deepline_call_limit = 30
+            self.deepline_limit_reached = False
 
         def call(self, name, arguments):
             return arguments
@@ -1466,6 +1767,9 @@ def test_arena_client_closes_when_model_transport_setup_fails(monkeypatch) -> No
     class FakeArenaTools:
         def __init__(self, timeout: float = 90.0) -> None:
             self.timeout = timeout
+            self.deepline_calls = 0
+            self.deepline_call_limit = 30
+            self.deepline_limit_reached = False
 
         def close(self) -> None:
             closed.append(True)
